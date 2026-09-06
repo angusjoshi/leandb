@@ -111,13 +111,41 @@ end Lawful
 /-- How one step can move the state machine: not at all, or by draining the commit queue. -/
 theorem step_kv_shape (s : NodeState σ κ) (ev : Event) :
     ((Protocol.step s ev).1.kv = s.kv ∧ (Protocol.step s ev).1.lastApplied = s.lastApplied)
-      ∨ ∃ s' : NodeState σ κ, s'.kv = s.kv ∧ s'.lastApplied = s.lastApplied
+      ∨ (∃ s' : NodeState σ κ, s'.kv = s.kv ∧ s'.lastApplied = s.lastApplied
           ∧ s'.log = (Protocol.step s ev).1.log
           ∧ (Protocol.step s ev).1.kv = (applyCommitted s').1.kv
-          ∧ (Protocol.step s ev).1.lastApplied = (applyCommitted s').1.lastApplied := by
+          ∧ (Protocol.step s ev).1.lastApplied = (applyCommitted s').1.lastApplied
+          ∧ ev.isSnapRecv = false)
+      ∨ (∃ (src term lid lastIdx : Nat) (anchor : Entry) (pairs : List (String × String)),
+          ev = Event.recv src (Msg.installSnapshot term lid lastIdx anchor pairs)
+          ∧ Protocol.snapInstalls s term lastIdx anchor = true
+          ∧ (Protocol.step s ev).1.kv = KVStore.ofPairs pairs
+          ∧ (Protocol.step s ev).1.lastApplied = lastIdx) := by
   cases ev with
   | recv src m =>
       cases m with
+      | installSnapshot term lid lastIdx anchor pairs =>
+          by_cases hi : Protocol.snapInstalls s term lastIdx anchor = true
+          · refine Or.inr (Or.inr ⟨src, term, lid, lastIdx, anchor, pairs, rfl, hi, ?_, ?_⟩) <;>
+              (have hlt : ¬ (term < s.currentTerm) := by
+                 rw [Protocol.snapInstalls] at hi
+                 simp only [Bool.and_eq_true, Bool.not_eq_true'] at hi
+                 simpa using hi.1.1.1.1
+               rw [Protocol.step, handleInstallSnapshot, if_neg hlt]
+               dsimp only
+               rw [if_pos hi])
+          · left
+            have hi' : Protocol.snapInstalls s term lastIdx anchor = false := by simpa using hi
+            have hmsd : ∀ v, (maybeStepDown s term v).1.kv = s.kv
+                ∧ (maybeStepDown s term v).1.lastApplied = s.lastApplied := by
+              intro v; rw [maybeStepDown]; split <;> exact ⟨rfl, rfl⟩
+            rw [Protocol.step, handleInstallSnapshot]
+            by_cases hlt : term < s.currentTerm
+            · rw [if_pos hlt]; exact ⟨rfl, rfl⟩
+            · rw [if_neg hlt]
+              dsimp only
+              rw [if_neg (by simp [hi'])]
+              exact ⟨(hmsd (some lid)).1, (hmsd (some lid)).2⟩
       | requestVote term c li lt =>
           left
           rw [Protocol.step, handleRequestVote]
@@ -140,7 +168,7 @@ theorem step_kv_shape (s : NodeState σ κ) (ev : Event) :
             split
             · exact Or.inl ⟨by simp, by simp⟩
             · dsimp only
-              exact Or.inr ⟨_, by simp, by simp, by simp, rfl, rfl⟩
+              exact Or.inr (Or.inl ⟨_, by simp, by simp, by simp, rfl, rfl, rfl⟩)
       | appendEntriesResp term ok mi =>
           rw [Protocol.step, handleAppendEntriesResp]
           split
@@ -148,14 +176,14 @@ theorem step_kv_shape (s : NodeState σ κ) (ev : Event) :
           · split
             · exact Or.inl ⟨by simp, by simp⟩
             · split
-              · exact Or.inr ⟨_, by simp, by simp, by simp, rfl, rfl⟩
+              · exact Or.inr (Or.inl ⟨_, by simp, by simp, by simp, rfl, rfl, rfl⟩)
               · exact Or.inl ⟨by simp, by simp⟩
   | clientReq rid cmd =>
       rw [Protocol.step, handleClientReq]
       split
       · exact Or.inl ⟨by simp, by simp⟩
       · dsimp only
-        exact Or.inr ⟨_, by simp, by simp, by simp, rfl, rfl⟩
+        exact Or.inr (Or.inl ⟨_, by simp, by simp, by simp, rfl, rfl, rfl⟩)
   | electionTimeout =>
       left
       rw [Protocol.step]
@@ -179,16 +207,32 @@ def SnapRefines (w : World σ κ) : Prop :=
     = Spec.run (cmdsUpTo (w.full i) (w.nodes i).snapIndex)
 
 /--
+The same for a recorded leader snapshot: the bindings it carries are the run of
+the prefix it covers.
+
+This is the state-machine half of snapshot transfer, and the reason a follower
+that installs one ends up with the right state machine rather than merely a
+plausible one. It is established when the record is written, from the recording
+node's own `SnapRefines`, and needs `LawfulKVStore.model_pairs` — the one law
+that says serialising and rebuilding a state machine is the identity on the
+model.
+-/
+def SnapRecRefines (w : World σ κ) : Prop :=
+  ∀ i T n ps (lg : σ), (i, T, n, ps, lg) ∈ w.snapLogs →
+    LawfulKVStore.toModel (KVStore.ofPairs ps : κ) = Spec.run (cmdsUpTo lg n)
+
+/--
 **The replicated state machine refines the sequential specification.**
 
 In every reachable world, each replica's key/value state is exactly what the
 sequential specification produces from the commands that replica has applied.
 -/
 theorem smRefines_snap {members : List Nat} {w : World σ κ}
-    (hnd : members.Nodup) (h : Reachable members w) : SMRefines w ∧ SnapRefines w := by
+    (hnd : members.Nodup) (h : Reachable members w) :
+    SMRefines w ∧ SnapRefines w ∧ SnapRecRefines w := by
   induction h with
   | init =>
-      refine ⟨fun i => ?_, fun i => ?_⟩
+      refine ⟨fun i => ?_, fun i => ?_, by intro i T n ps lg hm; simp [World.init] at hm⟩
       · unfold AppliedModel
         have h1 : (World.init (σ := σ) (κ := κ) members).nodes i
             = Protocol.initState { me := i, members := members } := rfl
@@ -208,7 +252,7 @@ theorem smRefines_snap {members : List Nat} {w : World σ κ}
       have hab := appliedBound_reachable hr
       have key : ∀ (j : Nat) (ev : Event), w1 = w0.act j ev →
           (∀ src m', ev = Event.recv src m' → (src, j, m') ∈ w0.sent) →
-          SMRefines w1 ∧ SnapRefines w1 := by
+          SMRefines w1 ∧ SnapRefines w1 ∧ SnapRecRefines w1 := by
         intro j ev hw hdel
         subst hw
         have hlog : ∀ i, i = j → ∀ k, k ≤ (w0.nodes i).lastApplied →
@@ -216,13 +260,16 @@ theorem smRefines_snap {members : List Nat} {w : World σ κ}
               = LogStore.get (w0.full i) k := by
           intro i hij; subst hij
           exact step_log_below_applied hnd hr (j := i) (ev := ev) hdel
-        refine ⟨fun i => ?_, fun i => ?_⟩
-        · by_cases hij : i = j
+        have hsm : SMRefines (w0.act j ev) := by
+          intro i
+          by_cases hij : i = j
           · subst hij
             rw [act_nodes_self, act_full_self]
             unfold AppliedModel
             have hlg := hlog i rfl
-            rcases step_kv_shape (w0.nodes i) ev with ⟨hkv, hla⟩ | ⟨s', h1, h2, h3, h4, h5⟩
+            rcases step_kv_shape (w0.nodes i) ev with ⟨hkv, hla⟩ |
+              ⟨s', h1, h2, h3, h4, h5, hsr0⟩ |
+              ⟨src, term, lid, lastIdx, anchor, pairs, hev, hi, hkv, hla⟩
             · rw [hkv, hla, cmdsUpTo_congr _ hlg]
               exact ih.1 i
             · have hs' : AppliedModel (fullStep w0 i ev) s' := by
@@ -237,20 +284,116 @@ theorem smRefines_snap {members : List Nat} {w : World σ κ}
                 have := full_get hr1 (i := i) (k := k) (by rw [act_nodes_self]; exact hk)
                 rwa [act_nodes_self, act_full_self] at this
               have hfa : LogStore.firstIndex s'.log ≤ s'.lastApplied + 1 := by
-                rw [h3, h2, step_firstIndex]
+                rw [h3, h2, step_firstIndex _ _ hsr0]
                 exact full_applied hr i
               have hac := applyCommitted_refines _ s' hbr hfa hs'
               unfold AppliedModel at hac
               rw [h4, h5]
               exact hac
+            · -- an installed snapshot: the record carries the right state machine
+              subst hev
+              obtain ⟨lg, hrec, hgetA, hlg1, hfl⟩ :=
+                snapInstall_facts (fullBridge_reachable hr) (hdel src _ rfl) hi
+              have hcu : cmdsUpTo (LogStore.truncFrom lg (lastIdx + 1)) lastIdx
+                  = cmdsUpTo lg lastIdx :=
+                cmdsUpTo_congr _ (fun k hk => by
+                  rw [LogStore.get_truncFrom, if_pos (by omega)])
+              rw [hkv, hla, hfl, hcu]
+              exact ih.2.2 _ _ _ _ _ hrec
           · rw [act_nodes_ne _ _ _ hij, act_full_ne _ _ _ hij]; exact ih.1 i
-        · by_cases hij : i = j
+        have hsnapref : SnapRefines (w0.act j ev) := by
+          intro i
+          by_cases hij : i = j
           · subst hij
-            rw [act_nodes_self, act_full_self, step_snapKV, step_snapIndex]
-            rw [cmdsUpTo_congr _ (fun k hk => hlog i rfl k
-              (Nat.le_trans hk (full_snapIndex hr i)))]
-            exact ih.2 i
-          · rw [act_nodes_ne _ _ _ hij, act_full_ne _ _ _ hij]; exact ih.2 i
+            rw [act_nodes_self, act_full_self]
+            by_cases hsr : ev.isSnapRecv = false
+            · rw [step_snapKV _ _ hsr, step_snapIndex _ _ hsr]
+              rw [cmdsUpTo_congr _ (fun k hk => hlog i rfl k
+                (Nat.le_trans hk (full_snapIndex hr i)))]
+              exact ih.2.1 i
+            · -- a snapshot event: installed, or nothing about the snapshot moves
+              have hsr' : ev.isSnapRecv = true := by simpa using hsr
+              cases ev with
+              | clientReq _ _ => exact absurd hsr' (by simp [Event.isSnapRecv])
+              | electionTimeout => exact absurd hsr' (by simp [Event.isSnapRecv])
+              | heartbeatTimeout => exact absurd hsr' (by simp [Event.isSnapRecv])
+              | recv src m =>
+                  cases m with
+                  | requestVote _ _ _ _ => exact absurd hsr' (by simp [Event.isSnapRecv])
+                  | requestVoteResp _ _ => exact absurd hsr' (by simp [Event.isSnapRecv])
+                  | appendEntries _ _ _ _ _ _ =>
+                      exact absurd hsr' (by simp [Event.isSnapRecv])
+                  | appendEntriesResp _ _ _ =>
+                      exact absurd hsr' (by simp [Event.isSnapRecv])
+                  | installSnapshot term lid lastIdx anchor pairs =>
+                      by_cases hi : Protocol.snapInstalls (w0.nodes i) term lastIdx anchor = true
+                      · obtain ⟨lg, hrec, hgetA, hlg1, hfl⟩ :=
+                          snapInstall_facts (fullBridge_reachable hr) (hdel src _ rfl) hi
+                        obtain ⟨hlt2, _, _, _⟩ := snapInstalls_facts hi
+                        have hkv : (Protocol.step (w0.nodes i)
+                            (Event.recv src
+                              (Msg.installSnapshot term lid lastIdx anchor pairs))).1.snapKV
+                            = KVStore.ofPairs pairs := by
+                          rw [Protocol.step, handleInstallSnapshot, if_neg hlt2]
+                          dsimp only
+                          rw [if_pos hi]
+                        have hsi : (Protocol.step (w0.nodes i)
+                            (Event.recv src
+                              (Msg.installSnapshot term lid lastIdx anchor pairs))).1.snapIndex
+                            = lastIdx := by
+                          rw [Protocol.step, handleInstallSnapshot, if_neg hlt2]
+                          dsimp only
+                          rw [if_pos hi]
+                        have hcu : cmdsUpTo (LogStore.truncFrom lg (lastIdx + 1)) lastIdx
+                            = cmdsUpTo lg lastIdx :=
+                          cmdsUpTo_congr _ (fun k hk => by
+                            rw [LogStore.get_truncFrom, if_pos (by omega)])
+                        rw [hkv, hsi, hfl, hcu]
+                        exact ih.2.2 _ _ _ _ _ hrec
+                      · have hi' : Protocol.snapInstalls (w0.nodes i) term lastIdx anchor
+                            = false := by simpa using hi
+                        obtain ⟨hlog', hsnapi, hla', hci'⟩ :=
+                          handleInstallSnapshot_noop (w0.nodes i) term lid lastIdx anchor pairs hi'
+                        have hkv : (Protocol.step (w0.nodes i)
+                            (Event.recv src
+                              (Msg.installSnapshot term lid lastIdx anchor pairs))).1.snapKV
+                            = (w0.nodes i).snapKV := by
+                          rw [Protocol.step, handleInstallSnapshot]
+                          by_cases hlt : term < (w0.nodes i).currentTerm
+                          · rw [if_pos hlt]
+                          · rw [if_neg hlt]
+                            dsimp only
+                            rw [if_neg (by simp [hi'])]
+                            rw [maybeStepDown]; split <;> rfl
+                        have hfl : fullStep w0 i (Event.recv src
+                            (Msg.installSnapshot term lid lastIdx anchor pairs)) = w0.full i := by
+                          rw [Protocol.fullStep, if_neg hi]
+                        have hsi2 : (Protocol.step (w0.nodes i)
+                            (Event.recv src
+                              (Msg.installSnapshot term lid lastIdx anchor pairs))).1.snapIndex
+                            = (w0.nodes i).snapIndex := hsnapi
+                        rw [hkv, hsi2, hfl]
+                        exact ih.2.1 i
+          · rw [act_nodes_ne _ _ _ hij, act_full_ne _ _ _ hij]; exact ih.2.1 i
+        refine ⟨hsm, hsnapref, ?_⟩
+        · -- the record written by this step is the node's own new snapshot
+          intro i T n ps lg hm
+          rw [act_snapLogs] at hm
+          rcases List.mem_append.mp hm with hm' | hm'
+          · exact ih.2.2 i T n ps lg hm'
+          · rw [snapLogOf] at hm'
+            split at hm'
+            · rcases List.mem_singleton.mp hm' with hq
+              have e1 := congrArg (fun r => r.1) hq
+              have e3 := congrArg (fun r => r.2.2.1) hq
+              have e4 := congrArg (fun r => r.2.2.2.1) hq
+              have e5 := congrArg (fun r => r.2.2.2.2) hq
+              simp only at e1 e3 e4 e5
+              subst e1
+              rw [e3, e4, e5, LawfulKVStore.model_pairs]
+              have := hsnapref i
+              rwa [act_nodes_self, act_full_self] at this
+            · simp at hm'
       cases hs with
       | deliver s d m0 hd hmem =>
           refine key d _ rfl ?_
@@ -263,25 +406,26 @@ theorem smRefines_snap {members : List Nat} {w : World σ κ}
       | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
       | crash k hk =>
           -- the state machine restarts from the snapshot, at the index it covers
-          refine ⟨fun i => ?_, fun i => ?_⟩
+          refine ⟨fun i => ?_, fun i => ?_, ?_⟩
           · unfold AppliedModel
             rw [crash_full]
             by_cases hik : i = k
             · subst hik
               rw [crash_nodes_self, restart_kv, restart_lastApplied,
                 LawfulKVStore.model_pairs]
-              exact ih.2 i
+              exact ih.2.1 i
             · rw [crash_nodes_ne _ _ hik]; exact ih.1 i
           · rw [crash_full]
             by_cases hik : i = k
             · subst hik
               rw [crash_nodes_self, restart_snapKV, restart_snapIndex,
                 LawfulKVStore.model_pairs]
-              exact ih.2 i
-            · rw [crash_nodes_ne _ _ hik]; exact ih.2 i
+              exact ih.2.1 i
+            · rw [crash_nodes_ne _ _ hik]; exact ih.2.1 i
+          · intro i T n ps lg hm; rw [crash_snapLogs] at hm; exact ih.2.2 i T n ps lg hm
       | compact k hk =>
           -- compaction leaves the state machine and the snapshot exactly where they were
-          refine ⟨fun i => ?_, fun i => ?_⟩
+          refine ⟨fun i => ?_, fun i => ?_, ?_⟩
           · unfold AppliedModel
             rw [compactAt_full]
             by_cases hik : i = k
@@ -298,8 +442,9 @@ theorem smRefines_snap {members : List Nat} {w : World σ κ}
               rw [Protocol.compactTo]
               split
               · exact ih.1 i
-              · exact ih.2 i
-            · rw [compactAt_nodes_ne _ _ hik]; exact ih.2 i
+              · exact ih.2.1 i
+            · rw [compactAt_nodes_ne _ _ hik]; exact ih.2.1 i
+          · intro i T n ps lg hm; rw [compactAt_snapLogs] at hm; exact ih.2.2 i T n ps lg hm
 
 /--
 **The replicated state machine refines the sequential specification.**

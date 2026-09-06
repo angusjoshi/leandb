@@ -58,6 +58,16 @@ theorem retryTo_shape {s : NodeState σ κ} {peer : Nat} {b : Bool} {to : Nat} {
   · rcases List.mem_singleton.mp h with h'
     exact ⟨(Action.send.inj h').1, Or.inr (Action.send.inj h').2⟩
 
+/-- The back-off path emits sends only, never a client reply. -/
+theorem retryTo_reply {s : NodeState σ κ} {peer : Nat} {b : Bool} {n rid : Nat} {r : Reply}
+    (h : Action.reply n rid r ∈ retryTo s peer b) : False := by
+  unfold retryTo at h
+  split at h
+  · rcases List.mem_cons.mp h with h' | h'
+    · exact Action.noConfusion h'
+    · rcases List.mem_singleton.mp h' with h''; exact Action.noConfusion h''
+  · rcases List.mem_singleton.mp h with h'; exact Action.noConfusion h'
+
 /-- A snapshot message is an `installSnapshot`, by definition. -/
 theorem snapshotMsg_shape (s : NodeState σ κ) :
     ∃ t l li a ps, snapshotMsg s = Msg.installSnapshot t l li a ps :=

@@ -43,6 +43,8 @@ structure World where
   votes : List (Nat × Nat × Nat)
   /-- Every `(log index, request id, reply)` ever returned to a client. -/
   answered : List (Nat × Nat × Reply)
+  /-- How many snapshot transfers have been put on the wire. Diagnostic only. -/
+  snapsSent : Nat
   deriving Inhabited
 
 /-- Build an `n`-node cluster with empty logs. -/
@@ -50,7 +52,7 @@ def World.init (n : Nat) : World :=
   { nodes := (List.range n).toArray.map (fun i =>
       Protocol.initState { me := i, members := List.range n })
     inflight := [], replies := [], refused := [],
-    applied := [], votes := [], answered := [] }
+    applied := [], votes := [], answered := [], snapsSent := 0 }
 
 /-- Route one node's emitted actions into the world. -/
 def World.absorb (w : World) (me : Nat) (acts : List Action) : World :=
@@ -59,6 +61,9 @@ def World.absorb (w : World) (me : Nat) (acts : List Action) : World :=
     | .send to (.requestVoteResp t true) =>
         { w with inflight := w.inflight ++ [(me, to, Msg.requestVoteResp t true)],
                  votes := w.votes ++ [(me, t, to)] }
+    | .send to (.installSnapshot t l li a ps) =>
+        { w with inflight := w.inflight ++ [(me, to, Msg.installSnapshot t l li a ps)],
+                 snapsSent := w.snapsSent + 1 }
     | .send to msg => { w with inflight := w.inflight ++ [(me, to, msg)] }
     | .reply idx rid r =>
         { w with replies := w.replies ++ [(rid, r)],

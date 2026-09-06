@@ -18,6 +18,31 @@ def sweep (n steps count : Nat) : Nat :=
 #eval sweep 3 1200 60   -- long schedules
 #eval sweep 4 600 150   -- even cluster size
 
+/-! ## Sweep 1b — schedules that force snapshot transfer
+
+The ordinary mix reaches the state `InstallSnapshot` exists for only by accident:
+10 of 300 schedules above produce one. Here node 0's inbound traffic is dropped
+30% of the time, so it falls far behind while the rest of the cluster keeps
+committing and compacting — and a leader can no longer serve it from the log.
+
+Observed: 83 of 200 schedules ship at least one snapshot, 199 in all, and **0
+safety failures**.
+-/
+
+def sweepLagging (n steps count : Nat) : Nat :=
+  (List.range count).foldl
+    (fun bad s => if checkLagging n steps (s * 7919 + 1) then bad else bad + 1) 0
+
+/-- How many schedules shipped a snapshot, and how many were shipped in all. -/
+def snapStats (n steps count : Nat) : Nat × Nat :=
+  (List.range count).foldl (fun (runs, total) s =>
+    let w := runLagging n steps (World.init n) (s * 7919 + 1) 1
+    let k := snapshotsSent w
+    ((if k > 0 then runs + 1 else runs), total + k)) (0, 0)
+
+#eval sweepLagging 3 600 200
+#eval snapStats 3 600 200
+
 /-! ## Sweep 2 — restarts that forget
 
 The same schedules, but a restart forgets the durable state — which is exactly

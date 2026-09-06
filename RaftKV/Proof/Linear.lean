@@ -89,10 +89,26 @@ theorem reply_from_applyCommitted {s : NodeState σ κ} {ev : Event} {n rid : Na
     (h : Action.reply n rid r ∈ (Protocol.step s ev).2) :
     ∃ s₀ : NodeState σ κ, (Protocol.step s ev).1 = (applyCommitted s₀).1
       ∧ s₀.kv = s.kv ∧ s₀.lastApplied = s.lastApplied
-      ∧ Action.reply n rid r ∈ (applyCommitted s₀).2 := by
+      ∧ Action.reply n rid r ∈ (applyCommitted s₀).2
+      ∧ ev.isSnapRecv = false := by
   cases ev with
   | recv src m =>
       cases m with
+      | installSnapshot a b c d e =>
+          exfalso
+          rw [Protocol.step, handleInstallSnapshot] at h
+          split at h
+          · simp at h
+          · dsimp only at h
+            have hno : Action.reply n rid r ∉ (maybeStepDown s a (some b)).2 := by
+              rw [maybeStepDown]
+              split
+              · rw [stepDown]
+                intro hq
+                rcases List.mem_map.mp hq with ⟨_, _, heq⟩
+                exact Action.noConfusion heq
+              · simp
+            split at h <;> exact hno h
       | requestVote term c li lt =>
           exfalso
           rw [Protocol.step, handleRequestVote] at h
@@ -130,7 +146,7 @@ theorem reply_from_applyCommitted {s : NodeState σ κ} {ev : Event} {n rid : Na
             · rename_i hc
               rw [if_neg hc]
               dsimp only
-              refine ⟨_, rfl, by simp, by simp, ?_⟩
+              refine ⟨_, rfl, by simp, by simp, ?_, rfl⟩
               rcases List.mem_append.mp h with h' | h'
               · exact absurd h' maybeStepDown_no_reply
               · rcases List.mem_cons.mp h' with hq | hq
@@ -150,8 +166,8 @@ theorem reply_from_applyCommitted {s : NodeState σ κ} {ev : Event} {n rid : Na
               · rename_i h3
                 rw [if_pos h3]
                 dsimp only
-                exact ⟨_, rfl, by simp, by simp, h⟩
-              · exfalso; rcases List.mem_singleton.mp h with hq; exact Action.noConfusion hq
+                exact ⟨_, rfl, by simp, by simp, h, rfl⟩
+              · exact absurd h (fun hq => retryTo_reply hq)
   | clientReq rid' cmd =>
       rw [Protocol.step, handleClientReq] at h ⊢
       split at h
@@ -159,7 +175,7 @@ theorem reply_from_applyCommitted {s : NodeState σ κ} {ev : Event} {n rid : Na
       · rename_i hg
         rw [if_neg hg]
         dsimp only at h ⊢
-        refine ⟨_, rfl, by simp, by simp, ?_⟩
+        refine ⟨_, rfl, by simp, by simp, ?_, rfl⟩
         rcases List.mem_append.mp h with h' | h'
         · exact absurd h' broadcastAppend_no_reply
         · exact h'
@@ -268,7 +284,7 @@ theorem step_reply (fl : σ) (s : NodeState σ κ) (ev : Event)
     ∃ e, LogStore.get fl n = some e ∧ e.reqId = rid
       ∧ 1 ≤ n ∧ n ≤ (Protocol.step s ev).1.commitIndex
       ∧ r = (Spec.applyCmd (Spec.run (cmdsUpTo fl (n - 1))) e.cmd).2 := by
-  obtain ⟨s₀, hpost, hkv, hla, hmem⟩ := reply_from_applyCommitted h
+  obtain ⟨s₀, hpost, hkv, hla, hmem, hsr⟩ := reply_from_applyCommitted h
   have hlog : (Protocol.step s ev).1.log = s₀.log := by rw [hpost]; simp
   have hci : (Protocol.step s ev).1.commitIndex = s₀.commitIndex := by rw [hpost]; simp
   have hmod : AppliedModel fl s₀ := by
@@ -277,7 +293,7 @@ theorem step_reply (fl : σ) (s : NodeState σ κ) (ev : Event)
     exact hpre
   obtain ⟨e, h1, h2, h3, h4, h5⟩ := applyCommitted_reply fl s₀
     (fun k hk => by rw [← hlog] at hk ⊢; exact hbr k hk)
-    (by rw [hla, ← hlog, step_firstIndex]; exact hfa)
+    (by rw [hla, ← hlog, step_firstIndex _ _ hsr]; exact hfa)
     hmod hmem
   exact ⟨e, h1, h2, h3, by rw [hci]; exact h4, h5⟩
 

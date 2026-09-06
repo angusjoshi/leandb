@@ -114,6 +114,51 @@ def runUnsafeShim (n : Nat) : Nat → World → Nat → Nat → World
       let (w', seed') := tickUnsafeShim n rid w seed
       runUnsafeShim n fuel w' seed' (rid + 1)
 
+/--
+A schedule tuned to force snapshot transfer.
+
+Messages to one unlucky node are dropped much more often, so it falls far behind
+while the rest of the cluster keeps committing and compacting. That is exactly
+the state in which a leader can no longer serve it from the log — the case
+`Msg.installSnapshot` exists for — and an ordinary mix reaches it only by
+accident.
+-/
+def tickLagging (n : Nat) (rid : Nat) (w : World) (seed : Nat) : World × Nat :=
+  let s := next seed
+  let choice := s % 100
+  let node := (s / 100) % n
+  -- node 0 is the unlucky one: most of its inbound traffic is dropped
+  let dropForZero : World := match w.inflight with
+    | [] => w
+    | (_, dst, _) :: rest => if dst = 0 then { w with inflight := rest } else w
+  if choice < 30 then
+    (dropForZero, s)
+  else if choice < 62 then
+    (w.deliverOne, s)
+  else if choice < 66 then
+    (w.fire node .electionTimeout, s)
+  else if choice < 74 then
+    (w.fire node .heartbeatTimeout, s)
+  else if choice < 88 then
+    let key := s!"k{rid % 3}"
+    let cmd : Command :=
+      match rid % 4 with
+      | 0 => .put key s!"v{rid}"
+      | 1 => .put key s!"v{rid}"
+      | 2 => .get key
+      | _ => .del key
+    (w.fire node (.clientReq rid cmd), s)
+  else if choice < 98 then
+    (w.compactNode node, s)
+  else
+    (World.crash w node, s)
+
+def runLagging (n : Nat) : Nat → World → Nat → Nat → World
+  | 0, w, _, _ => w
+  | fuel + 1, w, seed, rid =>
+      let (w', seed') := tickLagging n rid w seed
+      runLagging n fuel w' seed' (rid + 1)
+
 /-- Run `steps` scheduling decisions from `seed`. -/
 def run (crash : World → Nat → World) (n : Nat) : Nat → World → Nat → Nat → World
   | 0, w, _, _ => w
@@ -127,6 +172,9 @@ def run (crash : World → Nat → World) (n : Nat) : Nat → World → Nat → 
 def compacted (w : World) : Nat :=
   (List.range w.nodes.size).foldl
     (fun acc i => acc + (if h : i < w.nodes.size then w.nodes[i].snapIndex else 0)) 0
+
+/-- How many snapshot transfers a schedule produced, for diagnostics. -/
+def snapshotsSent (w : World) : Nat := w.snapsSent
 
 /-- Indices worth checking. -/
 def idxs (w : World) : List Nat :=
@@ -249,6 +297,10 @@ def allSafe (w : World) : Bool :=
 /-- Run one seeded schedule with durable restarts, and report whether it stayed safe. -/
 def check (n steps seed : Nat) : Bool :=
   allSafe (run World.crash n steps (World.init n) seed 1)
+
+/-- The snapshot-forcing schedule, checked the same way. -/
+def checkLagging (n steps seed : Nat) : Bool :=
+  allSafe (runLagging n steps (World.init n) seed 1)
 
 /-- The same schedule, but restarts forget the durable state — as today's server does. -/
 def checkNoDurability (n steps seed : Nat) : Bool :=

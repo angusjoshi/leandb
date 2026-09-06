@@ -139,7 +139,11 @@ def Node.onPeerLine (nd : Node) (line : String) : Async Unit := do
     match idStr.toNat?, Frame.decodeMsg (" ".intercalate rest) with
     | some src, some msg => do
         match msg with
+        -- both count as hearing from a leader: a snapshot is leader contact too,
+        -- and a node that ignored it would start an election in the middle of
+        -- being caught up
         | .appendEntries .. => nd.heard.set true
+        | .installSnapshot .. => nd.heard.set true
         | _ => pure ()
         nd.dispatch (.recv src msg)
     | _, _ => IO.eprintln s!"[{nd.cfg.me}] undecodable peer line"
