@@ -32,6 +32,18 @@ theorem act_nodes_self (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).nodes j = (Protocol.step (w.nodes j) ev).1 := by
   rw [World.act]; dsimp only; rw [if_pos rfl]
 
+/-- The ghost logical log of the acting node takes the same operation its log did. -/
+theorem act_full_self (w : World σ κ) (j : Nat) (ev : Event) :
+    (w.act j ev).full j = fullStep (w.nodes j) (w.full j) ev := by
+  rw [World.act]; dsimp only; rw [if_pos rfl]
+
+/-- And no other node's logical log moves. -/
+theorem act_full_ne (w : World σ κ) (j : Nat) {i : Nat} (ev : Event) (h : i ≠ j) :
+    (w.act j ev).full i = w.full i := by
+  rw [World.act]; dsimp only; rw [if_neg h]
+
+@[simp] theorem crash_full (w : World σ κ) (i : Nat) : (w.crash i).full = w.full := rfl
+
 theorem act_sent (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).sent = w.sent ++ sendsOf j (Protocol.step (w.nodes j) ev).2 := rfl
 

@@ -28,11 +28,13 @@ open RaftKV Protocol
 variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 
 theorem act_created (w : World σ κ) (j : Nat) (ev : Event) :
-    (w.act j ev).created = w.created ++ createdOf j (Protocol.step (w.nodes j) ev).1 ev := rfl
+    (w.act j ev).created
+      = w.created ++ createdOf j (Protocol.step (w.nodes j) ev).1
+          (fullStep (w.nodes j) (w.full j) ev) ev := rfl
 
-theorem mem_createdOf {i j k : Nat} {e : Entry} {s : NodeState σ κ} {ev : Event}
-    (h : (i, k, e) ∈ createdOf j s ev) :
-    i = j ∧ s.role = Role.leader ∧ k = LogStore.lastIndex s.log ∧ e.term = s.currentTerm := by
+theorem mem_createdOf {i j k : Nat} {e : Entry} {s : NodeState σ κ} {fl : σ} {ev : Event}
+    (h : (i, k, e) ∈ createdOf j s fl ev) :
+    i = j ∧ s.role = Role.leader ∧ k = LogStore.lastIndex fl ∧ e.term = s.currentTerm := by
   unfold createdOf at h
   cases ev with
   | clientReq rid cmd =>
@@ -50,12 +52,12 @@ theorem mem_createdOf {i j k : Nat} {e : Entry} {s : NodeState σ κ} {ev : Even
 Everything a freshly minted entry tells us, as a standalone fact: who minted it,
 that they were leading, at which index, and that their log now holds it there.
 -/
-theorem createdOf_get {j c k : Nat} {e : Entry} {ev : Event} {pre : NodeState σ κ}
-    (h : (c, k, e) ∈ createdOf j (Protocol.step pre ev).1 ev) :
+theorem createdOf_get {j c k : Nat} {e : Entry} {ev : Event} {pre : NodeState σ κ} {fl : σ}
+    (h : (c, k, e) ∈ createdOf j (Protocol.step pre ev).1 (fullStep pre fl ev) ev) :
     c = j ∧ (Protocol.step pre ev).1.role = Role.leader
       ∧ e.term = (Protocol.step pre ev).1.currentTerm
-      ∧ k = LogStore.lastIndex (Protocol.step pre ev).1.log
-      ∧ LogStore.get (Protocol.step pre ev).1.log k = some e := by
+      ∧ k = LogStore.lastIndex (fullStep pre fl ev)
+      ∧ LogStore.get (fullStep pre fl ev) k = some e := by
   obtain ⟨h1, h2, h3, h4⟩ := mem_createdOf h
   refine ⟨h1, h2, h4, h3, ?_⟩
   cases ev with
@@ -69,9 +71,9 @@ theorem createdOf_get {j c k : Nat} {e : Entry} {ev : Event} {pre : NodeState σ
         · exfalso
           rw [Protocol.step, handleClientReq, if_pos (by simp [hc])] at h2
           exact hc h2
-      have hlog : (Protocol.step pre (Event.clientReq rid cmd)).1.log
-          = LogStore.append pre.log { term := pre.currentTerm, cmd := cmd, reqId := rid } := by
-        rw [Protocol.step]; exact handleClientReq_log hlead
+      have hlog : fullStep pre fl (Event.clientReq rid cmd)
+          = LogStore.append fl { term := pre.currentTerm, cmd := cmd, reqId := rid } := by
+        rw [fullStep, if_pos hlead]
       have hterm : (Protocol.step pre (Event.clientReq rid cmd)).1.currentTerm
           = pre.currentTerm := by rw [Protocol.step]; exact handleClientReq_term_eq
       have hek : e = { term := pre.currentTerm, cmd := cmd, reqId := rid } := by
@@ -90,7 +92,7 @@ def CreatedLed (w : World σ κ) : Prop :=
 /-- A creator's log still holds what it created, for as long as its term stands. -/
 def CreatedInLeader (w : World σ κ) : Prop :=
   ∀ i k e, (i, k, e) ∈ w.created → (w.nodes i).currentTerm = e.term →
-    LogStore.get (w.nodes i).log k = some e
+    LogStore.get (w.full i) k = some e
 
 /-- **No two distinct entries are ever created at the same index in the same term.** -/
 def CreatedUnique (w : World σ κ) : Prop :=

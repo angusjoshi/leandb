@@ -354,4 +354,34 @@ theorem step_applied_le (s : NodeState σ κ) (ev : Event) (h : s.lastApplied �
 @[simp] theorem advanceCommit_kv (s : NodeState σ κ) : (advanceCommit s).kv = s.kv := by
   rw [advanceCommit]; split <;> rfl
 
+
+/--
+`aeAccepts` is exactly the condition on which `handleAppendEntries` splices.
+
+Stated so the ghost logical log in `RaftKV.Protocol.Network` can be defined
+against one copy of the branch conditions rather than a second that could drift.
+-/
+theorem handleAppendEntries_accepts (s : NodeState σ κ)
+    (src term leaderId prevIdx prevTerm : Nat) (entries : List Entry) (leaderCommit : Nat) :
+    (handleAppendEntries s src term leaderId prevIdx prevTerm entries leaderCommit).1.log
+      = if aeAccepts s term prevIdx prevTerm then appendFrom s.log (prevIdx + 1) entries
+        else s.log := by
+  rw [handleAppendEntries]
+  have hmsd : (maybeStepDown s term (some leaderId)).1.log = s.log := by
+    rw [maybeStepDown]; split <;> rfl
+  unfold aeAccepts
+  split
+  · rename_i hlt
+    rw [if_neg (by simp [hlt])]
+  · rename_i hlt
+    dsimp only
+    rw [aeConsistent_congr (a := { (maybeStepDown s term (some leaderId)).1 with
+      role := .follower, leaderHint := some leaderId,
+      votedFor := some ((maybeStepDown s term (some leaderId)).1.votedFor.getD leaderId) })
+      (b := s) hmsd prevIdx prevTerm]
+    cases hac : aeConsistent s prevIdx prevTerm
+    · simp [hac, hmsd]
+    · simp [hac, hlt, hmsd, applyCommitted_log]
+
+
 end RaftKV.Proof

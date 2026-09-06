@@ -1,4 +1,5 @@
 import RaftKV.Proof.LeaderStable
+import RaftKV.Proof.FullLog
 
 /-!
 # Leadership as a durable record

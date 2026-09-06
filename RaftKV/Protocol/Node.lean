@@ -241,6 +241,27 @@ def handleRequestVoteResp (s : NodeState σ κ) (term : Nat) (granted : Bool) (s
     let s' := { s with votesGranted := votes }
     if s'.cfg.isMajority votes then becomeLeader s' else (s', [])
 
+/--
+Does this `AppendEntries` pass both of the receiver's checks?
+
+Factored out because the ghost logical log in `RaftKV.Protocol.Network` has to
+make the same decision, and a second copy of the condition could drift from this
+one. `maybeStepDown` does not touch the log, so evaluating the consistency check
+against the pre-state's log is the same as evaluating it after the step down.
+-/
+def aeConsistent (s : NodeState σ κ) (prevIdx prevTerm : Nat) : Bool :=
+  (prevIdx == 0 && LogStore.firstIndex s.log == 1)
+    || LogStore.termAt s.log prevIdx == some prevTerm
+
+/-- The consistency check looks only at the log. -/
+theorem aeConsistent_congr {a b : NodeState σ κ} (h : a.log = b.log) (prevIdx prevTerm : Nat) :
+    aeConsistent a prevIdx prevTerm = aeConsistent b prevIdx prevTerm := by
+  unfold aeConsistent; rw [h]
+
+/-- Both of the receiver's checks together. -/
+def aeAccepts (s : NodeState σ κ) (term prevIdx prevTerm : Nat) : Bool :=
+  !(decide (term < s.currentTerm)) && aeConsistent s prevIdx prevTerm
+
 /-- Follower side of log replication. -/
 def handleAppendEntries (s : NodeState σ κ)
     (src term leaderId prevIdx prevTerm : Nat) (entries : List Entry) (leaderCommit : Nat) :
@@ -257,9 +278,9 @@ def handleAppendEntries (s : NodeState σ κ)
     -- so the second disjunct is the old `prevIdx == 0` case unchanged; once a
     -- prefix is gone, a payload that would land in it is refused and the leader
     -- backs off (or, when it too has discarded that far, sends a snapshot).
-    let consistent :=
-      (prevIdx == 0 && LogStore.firstIndex s.log == 1)
-        || LogStore.termAt s.log prevIdx == some prevTerm
+    -- `s` here is the stepped-down state, whose log is the one `aeAccepts` looks
+    -- at, so the two decisions agree by construction.
+    let consistent := aeConsistent s prevIdx prevTerm
     if !consistent then
       (s, downActs ++ [Action.send src (.appendEntriesResp s.currentTerm false 0)])
     else

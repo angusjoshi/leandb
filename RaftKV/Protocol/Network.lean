@@ -82,6 +82,22 @@ structure World (σ κ : Type) where
   clock : Nat
   /-- Ghost: the client-visible history, in real-time (that is, step) order. -/
   hist : List HEvent
+  /--
+  Ghost: each node's log **as it would be had nothing ever been compacted**.
+
+  Compaction discards a prefix, so a node's own log stops being able to answer
+  questions about low indices — and every safety invariant here is a claim about
+  what logs hold. Rather than weaken each of those claims with a window
+  condition (which makes some of them outright false, since two recorded logs
+  can have discarded different amounts), the invariants are stated about this
+  ghost log, which never discards anything. One bridge invariant relates it to
+  what a node actually holds, and that is the entire cost of compaction to the
+  proofs.
+
+  This is ghost state on the `World`, which the running system never builds, so
+  it costs the implementation nothing.
+  -/
+  full : Nat → σ
   /-- Ghost: `(entry, time)` for every entry a leader has minted. -/
   createTime : List (Entry × Nat)
   /-- Ghost: `(committed index, the log committed against, time)` for every commit. -/
@@ -95,12 +111,31 @@ def sendsOf (i : Nat) (acts : List Action) : List Packet :=
 def ledOf (i : Nat) (s : NodeState σ κ) : List (Nat × Nat) :=
   if s.role = Role.leader then [(i, s.currentTerm)] else []
 
-/-- Ghost: the entry node `i` mints while handling `ev`, if any. -/
-def createdOf (i : Nat) (s : NodeState σ κ) (ev : Event) : List (Nat × Nat × Entry) :=
+/--
+Ghost: how the logical log evolves — the same operation the node performs on its
+own log, applied to a log that has never discarded anything.
+
+The three cases mirror `RaftKV.Proof.step_log`: a client request appends, an
+accepted `AppendEntries` splices, and nothing else touches the log.
+`aeAccepts` is the very condition `handleAppendEntries` branches on, so the two
+cannot drift.
+-/
+def fullStep (s : NodeState σ κ) (fl : σ) (ev : Event) : σ :=
   match ev with
   | .clientReq rid cmd =>
       if s.role = Role.leader then
-        [(i, LogStore.lastIndex s.log, { term := s.currentTerm, cmd := cmd, reqId := rid })]
+        LogStore.append fl { term := s.currentTerm, cmd := cmd, reqId := rid }
+      else fl
+  | .recv _ (.appendEntries term _ prevIdx prevTerm es _) =>
+      if Protocol.aeAccepts s term prevIdx prevTerm then appendFrom fl (prevIdx + 1) es else fl
+  | _ => fl
+
+/-- Ghost: the entry node `i` mints while handling `ev`, if any. -/
+def createdOf (i : Nat) (s : NodeState σ κ) (fl : σ) (ev : Event) : List (Nat × Nat × Entry) :=
+  match ev with
+  | .clientReq rid cmd =>
+      if s.role = Role.leader then
+        [(i, LogStore.lastIndex fl, { term := s.currentTerm, cmd := cmd, reqId := rid })]
       else []
   | _ => []
 
@@ -112,12 +147,12 @@ determined by its index and term, this term pins down the entry beneath it, and
 chasing the links downwards is what proves two agreeing logs agree all the way
 to the start.
 -/
-def chainOf (i : Nat) (s : NodeState σ κ) (ev : Event) : List (Nat × Entry × Nat) :=
+def chainOf (i : Nat) (s : NodeState σ κ) (fl : σ) (ev : Event) : List (Nat × Entry × Nat) :=
   match ev with
   | .clientReq rid cmd =>
       if s.role = Role.leader then
-        [(LogStore.lastIndex s.log, { term := s.currentTerm, cmd := cmd, reqId := rid },
-          (LogStore.termAt s.log (LogStore.lastIndex s.log - 1)).getD 0)]
+        [(LogStore.lastIndex fl, { term := s.currentTerm, cmd := cmd, reqId := rid },
+          (LogStore.termAt fl (LogStore.lastIndex fl - 1)).getD 0)]
       else []
   | _ => []
 
@@ -129,9 +164,9 @@ which no current-state predicate can express once that leader has moved on. The
 log is stored as a `σ` value rather than a list, so this needs no lawfulness
 instance and leaves the executable path untouched.
 -/
-def electedOf (i : Nat) (pre post : NodeState σ κ) : List (Nat × Nat × σ) :=
+def electedOf (i : Nat) (pre post : NodeState σ κ) (fl : σ) : List (Nat × Nat × σ) :=
   if post.role = Role.leader ∧ pre.role ≠ Role.leader then
-    [(i, post.currentTerm, post.log)]
+    [(i, post.currentTerm, fl)]
   else []
 
 /--
@@ -143,9 +178,10 @@ Recorded only when the index genuinely *advances* under leadership. A leader's
 index is not justified by this leader's own `matchIndex` — it was justified by
 an earlier leader, which has its own record.
 -/
-def commitOf (i : Nat) (pre post : NodeState σ κ) : List (Nat × Nat × Nat × σ × List Nat) :=
+def commitOf (i : Nat) (pre post : NodeState σ κ) (fl : σ) :
+    List (Nat × Nat × Nat × σ × List Nat) :=
   if post.role = Role.leader ∧ pre.commitIndex < post.commitIndex then
-    [(i, post.currentTerm, post.commitIndex, post.log, replicatedOn post post.commitIndex)]
+    [(i, post.currentTerm, post.commitIndex, fl, replicatedOn post post.commitIndex)]
   else []
 
 /--
@@ -156,12 +192,13 @@ current-state predicate can express, since a follower may later be overwritten
 by a different leader. Recording the acking log makes the quorum's contents
 permanent evidence.
 -/
-def ackOf (i : Nat) (s : NodeState σ κ) (acts : List Action) : List (Nat × Nat × Nat × σ) :=
+def ackOf (i : Nat) (s : NodeState σ κ) (fl : σ) (acts : List Action) :
+    List (Nat × Nat × Nat × σ) :=
   acts.filterMap (fun a =>
     match a with
-    | .send _ (.appendEntriesResp t true m) => some (i, t, m, s.log)
+    | .send _ (.appendEntriesResp t true m) => some (i, t, m, fl)
     | _ => none)
-  ++ (if s.role = Role.leader then [(i, s.currentTerm, LogStore.lastIndex s.log, s.log)] else [])
+  ++ (if s.role = Role.leader then [(i, s.currentTerm, LogStore.lastIndex fl, fl)] else [])
 
 /--
 Ghost: the log a voter held when it granted a vote.
@@ -170,10 +207,11 @@ The `upToDate` check compares the candidate's advertised log against the
 *voter's log at that instant*, so that log has to be on record for the check to
 mean anything later.
 -/
-def voteLogOf (i : Nat) (s : NodeState σ κ) (acts : List Action) : List (Nat × Nat × σ) :=
+def voteLogOf (i : Nat) (s : NodeState σ κ) (fl : σ) (acts : List Action) :
+    List (Nat × Nat × σ) :=
   acts.filterMap (fun a =>
     match a with
-    | .send _ (.requestVoteResp t true) => some (i, t, s.log)
+    | .send _ (.requestVoteResp t true) => some (i, t, fl)
     | _ => none)
 
 /--
@@ -185,8 +223,8 @@ that outlives the leader. Since a leader's log only grows while it leads
 (`leader_stable`), the snapshots for a given `(node, term)` form a chain under
 prefix, and any one of them can stand for "what that leader had".
 -/
-def leaderLogOf (i : Nat) (s : NodeState σ κ) : List (Nat × Nat × σ) :=
-  if s.role = Role.leader then [(i, s.currentTerm, s.log)] else []
+def leaderLogOf (i : Nat) (s : NodeState σ κ) (fl : σ) : List (Nat × Nat × σ) :=
+  if s.role = Role.leader then [(i, s.currentTerm, fl)] else []
 
 /-- Ghost: the vote node `i` holds in state `s`, if any. -/
 def voteOf (i : Nat) (s : NodeState σ κ) : List (Nat × Nat × Nat) :=
@@ -212,31 +250,35 @@ def histOf (i : Nat) (ev : Event) (acts : List Action) (t : Nat) : List HEvent :
       | _ => none)
 
 /-- Ghost: when each minted entry was minted. -/
-def createTimeOf (i : Nat) (s : NodeState σ κ) (ev : Event) (t : Nat) : List (Entry × Nat) :=
-  (createdOf i s ev).map (fun r => (r.2.2, t))
+def createTimeOf (i : Nat) (s : NodeState σ κ) (fl : σ) (ev : Event) (t : Nat) :
+    List (Entry × Nat) :=
+  (createdOf i s fl ev).map (fun r => (r.2.2, t))
 
 /-- Ghost: when each commit happened, and against which log. -/
-def commitTimeOf (i : Nat) (pre post : NodeState σ κ) (t : Nat) : List (Nat × σ × Nat) :=
-  (commitOf i pre post).map (fun r => (r.2.2.1, r.2.2.2.1, t))
+def commitTimeOf (i : Nat) (pre post : NodeState σ κ) (fl : σ) (t : Nat) :
+    List (Nat × σ × Nat) :=
+  (commitOf i pre post fl).map (fun r => (r.2.2.1, r.2.2.2.1, t))
 
 /-- Deliver `ev` to node `i`, recording whatever it transmits and votes. -/
 def World.act (w : World σ κ) (i : Nat) (ev : Event) : World σ κ :=
   let (s', acts) := Protocol.step (w.nodes i) ev
+  let fl := fullStep (w.nodes i) (w.full i) ev
   { nodes := fun j => if j = i then s' else w.nodes j,
+    full := fun j => if j = i then fl else w.full j,
     sent := w.sent ++ sendsOf i acts,
     votes := w.votes ++ voteOf i s',
     led := w.led ++ ledOf i s',
-    created := w.created ++ createdOf i s' ev,
-    chain := w.chain ++ chainOf i s' ev,
-    elected := w.elected ++ electedOf i (w.nodes i) s',
-    commits := w.commits ++ commitOf i (w.nodes i) s',
-    acks := w.acks ++ ackOf i s' acts,
-    voteLogs := w.voteLogs ++ voteLogOf i s' acts,
-    leaderLogs := w.leaderLogs ++ leaderLogOf i s',
+    created := w.created ++ createdOf i s' fl ev,
+    chain := w.chain ++ chainOf i s' fl ev,
+    elected := w.elected ++ electedOf i (w.nodes i) s' fl,
+    commits := w.commits ++ commitOf i (w.nodes i) s' fl,
+    acks := w.acks ++ ackOf i s' fl acts,
+    voteLogs := w.voteLogs ++ voteLogOf i s' fl acts,
+    leaderLogs := w.leaderLogs ++ leaderLogOf i s' fl,
     clock := w.clock + 1,
     hist := w.hist ++ histOf i ev acts w.clock,
-    createTime := w.createTime ++ createTimeOf i s' ev w.clock,
-    commitTime := w.commitTime ++ commitTimeOf i (w.nodes i) s' w.clock }
+    createTime := w.createTime ++ createTimeOf i s' fl ev w.clock,
+    commitTime := w.commitTime ++ commitTimeOf i (w.nodes i) s' fl w.clock }
 
 /--
 Node `i` crashes and restarts.
@@ -256,7 +298,8 @@ def World.init (members : List Nat) : World σ κ :=
   { nodes := fun i => Protocol.initState { me := i, members := members },
     sent := [], votes := [], led := [], created := [], chain := [], elected := [],
     commits := [], acks := [], voteLogs := [], leaderLogs := [],
-    clock := 0, hist := [], createTime := [], commitTime := [] }
+    clock := 0, hist := [], full := fun _ => LogStore.empty,
+    createTime := [], commitTime := [] }
 
 /--
 One step of the system. Only cluster members run the protocol.

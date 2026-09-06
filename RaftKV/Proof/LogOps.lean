@@ -24,11 +24,12 @@ variable {σ : Type} [LogStore σ] [LawfulLogStore σ]
 
 /-- After splicing one entry at `startIdx`, the log reaches exactly `startIdx`. -/
 theorem appendFrom_one_lastIndex (lg : σ) (startIdx : Nat)
-    (hb : startIdx ≤ LogStore.lastIndex lg + 1) (hb1 : 1 ≤ startIdx) (e : Entry) :
+    (hb : startIdx ≤ LogStore.lastIndex lg + 1) (hb1 : LogStore.firstIndex lg ≤ startIdx) (e : Entry) :
     LogStore.lastIndex
         (if (LogStore.get lg startIdx).isSome then
           LogStore.append (LogStore.truncFrom lg startIdx) e
          else LogStore.append lg e) = startIdx := by
+  have hb1' : 1 ≤ startIdx := Nat.le_trans (LawfulLogStore.first_pos lg) hb1
   split
   · rename_i h
     have hle : startIdx ≤ LogStore.lastIndex lg :=
@@ -36,7 +37,7 @@ theorem appendFrom_one_lastIndex (lg : σ) (startIdx : Nat)
     rw [LogStore.lastIndex_append, LogStore.lastIndex_truncFrom_of_le _ _ hle]
     omega
   · rename_i h
-    have hnone : ¬(1 ≤ startIdx ∧ startIdx ≤ LogStore.lastIndex lg) := by
+    have hnone : ¬(LogStore.firstIndex lg ≤ startIdx ∧ startIdx ≤ LogStore.lastIndex lg) := by
       intro hc; exact h ((LogStore.get_isSome_iff lg startIdx).mpr hc)
     rw [LogStore.lastIndex_append]
     omega
@@ -63,28 +64,28 @@ theorem appendFrom_get_of_lt : ∀ (es : List Entry) (lg : σ) (startIdx i : Nat
           ((LogStore.get_isSome_iff lg startIdx).mp (by rw [hg]; rfl)).2
         by_cases hterm : existing.term == e.term
         · rw [if_pos hterm]
-          exact ih lg (startIdx + 1) i (by omega) (by omega)
+          exact ih lg (startIdx + 1) i (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))
         · rw [if_neg hterm]
           have hlast : LogStore.lastIndex (LogStore.truncFrom lg startIdx) = startIdx - 1 :=
             LogStore.lastIndex_truncFrom_of_le _ _ hle
           have h1 : 1 ≤ startIdx :=
-            ((LogStore.get_isSome_iff lg startIdx).mp (by rw [hg]; rfl)).1
+            Nat.le_trans (LawfulLogStore.first_pos lg) (LogStore.firstIndex_le_of_get hg)
           have hb' : startIdx + 1
               ≤ LogStore.lastIndex (LogStore.append (LogStore.truncFrom lg startIdx) e) + 1 := by
             rw [LogStore.lastIndex_append, hlast]; omega
-          rw [ih _ (startIdx + 1) i hb' (by omega)]
+          rw [ih _ (startIdx + 1) i hb' (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))]
           rw [LogStore.get_append_of_le _ _ _ (by rw [hlast]; omega)]
           exact LogStore.get_truncFrom_of_lt lg startIdx i hi
     | none =>
         dsimp only
-        have hnot : ¬(1 ≤ startIdx ∧ startIdx ≤ LogStore.lastIndex lg) := by
+        have hnot : ¬(LogStore.firstIndex lg ≤ startIdx ∧ startIdx ≤ LogStore.lastIndex lg) := by
           intro hc
           have := (LogStore.get_isSome_iff lg startIdx).mpr hc
           rw [hg] at this; exact Bool.noConfusion this
         have hb' : startIdx + 1 ≤ LogStore.lastIndex (LogStore.append lg e) + 1 := by
           rw [LogStore.lastIndex_append]; omega
-        rw [ih _ (startIdx + 1) i hb' (by omega)]
-        exact LogStore.get_append_of_le _ _ _ (by omega)
+        rw [ih _ (startIdx + 1) i hb' (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))]
+        exact LogStore.get_append_of_le _ _ _ (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))
 
 /-- Splicing only ever extends the log's reach to cover what it wrote. -/
 theorem appendFrom_lastIndex_ge : ∀ (es : List Entry) (lg : σ) (startIdx : Nat),
@@ -103,13 +104,13 @@ theorem appendFrom_lastIndex_ge : ∀ (es : List Entry) (lg : σ) (startIdx : Na
           ((LogStore.get_isSome_iff lg startIdx).mp (by rw [hg]; rfl)).2
         by_cases hterm : existing.term == e.term
         · rw [if_pos hterm]
-          have := ih lg (startIdx + 1) (by omega)
+          have := ih lg (startIdx + 1) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))
           simp only [List.length_cons]; omega
         · rw [if_neg hterm]
           have hlast : LogStore.lastIndex (LogStore.truncFrom lg startIdx) = startIdx - 1 :=
             LogStore.lastIndex_truncFrom_of_le _ _ hle
-          have h1 : 1 ≤ startIdx := by
-            have := ((LogStore.get_isSome_iff lg startIdx).mp (by rw [hg]; rfl)).1; omega
+          have h1 : 1 ≤ startIdx :=
+            Nat.le_trans (LawfulLogStore.first_pos lg) (LogStore.firstIndex_le_of_get hg)
           have hb' : startIdx + 1
               ≤ LogStore.lastIndex (LogStore.append (LogStore.truncFrom lg startIdx) e) + 1 := by
             rw [LogStore.lastIndex_append, hlast]; omega
@@ -132,7 +133,7 @@ intended index. So a property `P` holding of both survives the splice.
 -/
 theorem appendFrom_mem (P : Nat → Entry → Prop) :
     ∀ (es : List Entry) (lg : σ) (startIdx : Nat),
-      startIdx ≤ LogStore.lastIndex lg + 1 → 1 ≤ startIdx →
+      startIdx ≤ LogStore.lastIndex lg + 1 → LogStore.firstIndex lg ≤ startIdx →
       (∀ k e, LogStore.get lg k = some e → P k e) →
       (∀ n e, es[n]? = some e → P (startIdx + n) e) →
       ∀ k e, LogStore.get (appendFrom lg startIdx es) k = some e → P k e := by
@@ -141,6 +142,7 @@ theorem appendFrom_mem (P : Nat → Entry → Prop) :
   | nil => intro lg startIdx _ _ hlog _ k e h; exact hlog k e h
   | cons a es ih =>
     intro lg startIdx hb h1 hlog hes k e h
+    have h1' : 1 ≤ startIdx := Nat.le_trans (LawfulLogStore.first_pos lg) h1
     rw [appendFrom] at h
     cases hg : LogStore.get lg startIdx with
     | some existing =>
@@ -150,7 +152,7 @@ theorem appendFrom_mem (P : Nat → Entry → Prop) :
           ((LogStore.get_isSome_iff lg startIdx).mp (by rw [hg]; rfl)).2
         by_cases hterm : existing.term == a.term
         · rw [if_pos hterm] at h
-          exact ih lg (startIdx + 1) (by omega) (by omega) hlog
+          exact ih lg (startIdx + 1) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) hlog
             (fun n e' he' => by
               have := hes (n + 1) e' (by simpa using he')
               rwa [show startIdx + 1 + n = startIdx + (n + 1) by omega]) k e h
@@ -158,7 +160,7 @@ theorem appendFrom_mem (P : Nat → Entry → Prop) :
           have hlast : LogStore.lastIndex (LogStore.truncFrom lg startIdx) = startIdx - 1 :=
             LogStore.lastIndex_truncFrom_of_le _ _ hle
           refine ih _ (startIdx + 1) (by rw [LogStore.lastIndex_append, hlast]; omega)
-            (by omega) ?_ (fun n e' he' => by
+            (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) ?_ (fun n e' he' => by
               have := hes (n + 1) e' (by simpa using he')
               rwa [show startIdx + 1 + n = startIdx + (n + 1) by omega]) k e h
           -- the spliced log: old entries below the cut, plus `a` at `startIdx`
@@ -184,7 +186,7 @@ theorem appendFrom_mem (P : Nat → Entry → Prop) :
             have := (LogStore.get_isSome_iff lg startIdx).mpr ⟨h1, hc⟩
             rw [hg] at this; exact Bool.noConfusion this
         have hlast : LogStore.lastIndex lg = startIdx - 1 := by omega
-        refine ih _ (startIdx + 1) (by rw [LogStore.lastIndex_append]; omega) (by omega) ?_
+        refine ih _ (startIdx + 1) (by rw [LogStore.lastIndex_append]; omega) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) ?_
           (fun n e' he' => by
             have := hes (n + 1) e' (by simpa using he')
             rwa [show startIdx + 1 + n = startIdx + (n + 1) by omega]) k e h
@@ -207,13 +209,14 @@ fires only when the terms already agree, so the term at the index is the
 payload's either way.
 -/
 theorem appendFrom_termAt : ∀ (es : List Entry) (lg : σ) (startIdx n : Nat) (e : Entry),
-    startIdx ≤ LogStore.lastIndex lg + 1 → 1 ≤ startIdx → es[n]? = some e →
+    startIdx ≤ LogStore.lastIndex lg + 1 → LogStore.firstIndex lg ≤ startIdx → es[n]? = some e →
     LogStore.termAt (appendFrom lg startIdx es) (startIdx + n) = some e.term := by
   intro es
   induction es with
   | nil => intro lg startIdx n e _ _ hn; simp at hn
   | cons a es ih =>
     intro lg startIdx n e hb h1 hn
+    have h1' : 1 ≤ startIdx := Nat.le_trans (LawfulLogStore.first_pos lg) h1
     rw [appendFrom]
     cases hg : LogStore.get lg startIdx with
     | some existing =>
@@ -227,11 +230,11 @@ theorem appendFrom_termAt : ∀ (es : List Entry) (lg : σ) (startIdx n : Nat) (
               have hea : a = e := by simpa using hn
               unfold LogStore.termAt
               simp only [Nat.add_zero]
-              rw [appendFrom_get_of_lt es lg (startIdx + 1) startIdx (by omega) (by omega), hg]
+              rw [appendFrom_get_of_lt es lg (startIdx + 1) startIdx (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)), hg]
               have hte : existing.term = a.term := by simpa using hterm
               simp [hte, hea]
           | succ m =>
-              have := ih lg (startIdx + 1) m e (by omega) (by omega) (by simpa using hn)
+              have := ih lg (startIdx + 1) m e (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by simpa using hn)
               rwa [show startIdx + 1 + m = startIdx + (m + 1) by omega] at this
         · rw [if_neg hterm]
           have hlast : LogStore.lastIndex (LogStore.truncFrom lg startIdx) = startIdx - 1 :=
@@ -244,11 +247,11 @@ theorem appendFrom_termAt : ∀ (es : List Entry) (lg : σ) (startIdx n : Nat) (
               have hea : a = e := by simpa using hn
               unfold LogStore.termAt
               simp only [Nat.add_zero]
-              rw [appendFrom_get_of_lt es _ (startIdx + 1) startIdx hb' (by omega)]
-              rw [LogStore.get_append, hlast, if_pos (by omega)]
+              rw [appendFrom_get_of_lt es _ (startIdx + 1) startIdx hb' (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))]
+              rw [LogStore.get_append, hlast, if_pos (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))]
               simp [hea]
           | succ m =>
-              have := ih _ (startIdx + 1) m e hb' (by omega) (by simpa using hn)
+              have := ih _ (startIdx + 1) m e hb' (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by simpa using hn)
               rwa [show startIdx + 1 + m = startIdx + (m + 1) by omega] at this
     | none =>
         dsimp only
@@ -266,16 +269,16 @@ theorem appendFrom_termAt : ∀ (es : List Entry) (lg : σ) (startIdx n : Nat) (
             have hea : a = e := by simpa using hn
             unfold LogStore.termAt
             simp only [Nat.add_zero]
-            rw [appendFrom_get_of_lt es _ (startIdx + 1) startIdx hb' (by omega)]
-            rw [LogStore.get_append, hlast, if_pos (by omega)]
+            rw [appendFrom_get_of_lt es _ (startIdx + 1) startIdx hb' (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))]
+            rw [LogStore.get_append, hlast, if_pos (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))]
             simp [hea]
         | succ m =>
-            have := ih _ (startIdx + 1) m e hb' (by omega) (by simpa using hn)
+            have := ih _ (startIdx + 1) m e hb' (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by simpa using hn)
             rwa [show startIdx + 1 + m = startIdx + (m + 1) by omega] at this
 
 /-- Beyond the spliced range the log is either untouched or has ended. -/
 theorem appendFrom_get_above : ∀ (es : List Entry) (lg : σ) (startIdx k : Nat),
-    startIdx ≤ LogStore.lastIndex lg + 1 → 1 ≤ startIdx → startIdx + es.length ≤ k →
+    startIdx ≤ LogStore.lastIndex lg + 1 → LogStore.firstIndex lg ≤ startIdx → startIdx + es.length ≤ k →
     LogStore.get (appendFrom lg startIdx es) k = LogStore.get lg k
       ∨ LogStore.get (appendFrom lg startIdx es) k = none := by
   intro es
@@ -283,6 +286,7 @@ theorem appendFrom_get_above : ∀ (es : List Entry) (lg : σ) (startIdx k : Nat
   | nil => intro lg startIdx k _ _ _; exact Or.inl rfl
   | cons a es ih =>
     intro lg startIdx k hb h1 hk
+    have h1' : 1 ≤ startIdx := Nat.le_trans (LawfulLogStore.first_pos lg) h1
     rw [appendFrom]
     cases hg : LogStore.get lg startIdx with
     | some existing =>
@@ -291,14 +295,14 @@ theorem appendFrom_get_above : ∀ (es : List Entry) (lg : σ) (startIdx k : Nat
           ((LogStore.get_isSome_iff lg startIdx).mp (by rw [hg]; rfl)).2
         by_cases hterm : existing.term == a.term
         · rw [if_pos hterm]
-          exact ih lg (startIdx + 1) k (by omega) (by omega) (by simp at hk ⊢; omega)
+          exact ih lg (startIdx + 1) k (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by simp at hk ⊢; omega)
         · rw [if_neg hterm]
           have hlast : LogStore.lastIndex (LogStore.truncFrom lg startIdx) = startIdx - 1 :=
             LogStore.lastIndex_truncFrom_of_le _ _ hle
           have hb' : startIdx + 1
               ≤ LogStore.lastIndex (LogStore.append (LogStore.truncFrom lg startIdx) a) + 1 := by
             rw [LogStore.lastIndex_append, hlast]; omega
-          rcases ih _ (startIdx + 1) k hb' (by omega) (by simp at hk ⊢; omega) with h | h
+          rcases ih _ (startIdx + 1) k hb' (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by simp at hk ⊢; omega) with h | h
           · right
             rw [h, LogStore.get_append, hlast, if_neg (by simp at hk; omega),
               LogStore.get_truncFrom, if_neg (by simp at hk; omega)]
@@ -313,7 +317,7 @@ theorem appendFrom_get_above : ∀ (es : List Entry) (lg : σ) (startIdx k : Nat
             rw [hg] at this; exact Bool.noConfusion this
         have hb' : startIdx + 1 ≤ LogStore.lastIndex (LogStore.append lg a) + 1 := by
           rw [LogStore.lastIndex_append]; omega
-        rcases ih _ (startIdx + 1) k hb' (by omega) (by simp at hk ⊢; omega) with h | h
+        rcases ih _ (startIdx + 1) k hb' (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by simp at hk ⊢; omega) with h | h
         · right
           rw [h, LogStore.get_append, if_neg (by simp at hk; omega)]
           rcases Option.eq_none_or_eq_some (LogStore.get lg k) with hq | ⟨v, hq⟩
@@ -325,7 +329,7 @@ theorem appendFrom_get_above : ∀ (es : List Entry) (lg : σ) (startIdx k : Nat
 
 /-- A splice never leaves the log longer than the old log or the spliced range. -/
 theorem appendFrom_lastIndex_le : ∀ (es : List Entry) (lg : σ) (startIdx : Nat),
-    startIdx ≤ LogStore.lastIndex lg + 1 → 1 ≤ startIdx →
+    startIdx ≤ LogStore.lastIndex lg + 1 → LogStore.firstIndex lg ≤ startIdx →
     LogStore.lastIndex (appendFrom lg startIdx es)
       ≤ max (LogStore.lastIndex lg) (startIdx + es.length - 1) := by
   intro es
@@ -336,6 +340,7 @@ theorem appendFrom_lastIndex_le : ∀ (es : List Entry) (lg : σ) (startIdx : Na
       exact Nat.le_max_left _ _
   | cons a es ih =>
     intro lg startIdx hb h1
+    have h1' : 1 ≤ startIdx := Nat.le_trans (LawfulLogStore.first_pos lg) h1
     rw [appendFrom]
     cases hg : LogStore.get lg startIdx with
     | some existing =>
@@ -344,7 +349,7 @@ theorem appendFrom_lastIndex_le : ∀ (es : List Entry) (lg : σ) (startIdx : Na
           ((LogStore.get_isSome_iff lg startIdx).mp (by rw [hg]; rfl)).2
         by_cases hterm : existing.term == a.term
         · rw [if_pos hterm]
-          have := ih lg (startIdx + 1) (by omega) (by omega)
+          have := ih lg (startIdx + 1) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))
           simp only [List.length_cons]; omega
         · rw [if_neg hterm]
           have hlast : LogStore.lastIndex (LogStore.truncFrom lg startIdx) = startIdx - 1 :=
@@ -352,7 +357,7 @@ theorem appendFrom_lastIndex_le : ∀ (es : List Entry) (lg : σ) (startIdx : Na
           have hlg' : LogStore.lastIndex (LogStore.append (LogStore.truncFrom lg startIdx) a)
               = startIdx := by rw [LogStore.lastIndex_append, hlast]; omega
           have := ih (LogStore.append (LogStore.truncFrom lg startIdx) a) (startIdx + 1)
-            (by rw [hlg']; omega) (by omega)
+            (by rw [hlg']; omega) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))
           rw [hlg'] at this
           simp only [List.length_cons]; omega
     | none =>
@@ -365,7 +370,7 @@ theorem appendFrom_lastIndex_le : ∀ (es : List Entry) (lg : σ) (startIdx : Na
             rw [hg] at this; exact Bool.noConfusion this
         have hlg' : LogStore.lastIndex (LogStore.append lg a) = startIdx := by
           rw [LogStore.lastIndex_append]; omega
-        have := ih (LogStore.append lg a) (startIdx + 1) (by rw [hlg']; omega) (by omega)
+        have := ih (LogStore.append lg a) (startIdx + 1) (by rw [hlg']; omega) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))
         rw [hlg'] at this
         simp only [List.length_cons]; omega
 
@@ -376,7 +381,7 @@ If the log still has an entry past everything the payload covers, no conflict
 was found, so every step took the keep-existing branch and the log is untouched.
 -/
 theorem appendFrom_above_unchanged : ∀ (es : List Entry) (lg : σ) (startIdx k : Nat),
-    startIdx ≤ LogStore.lastIndex lg + 1 → 1 ≤ startIdx → startIdx + es.length ≤ k →
+    startIdx ≤ LogStore.lastIndex lg + 1 → LogStore.firstIndex lg ≤ startIdx → startIdx + es.length ≤ k →
     (LogStore.get (appendFrom lg startIdx es) k).isSome →
     ∀ m, LogStore.get (appendFrom lg startIdx es) m = LogStore.get lg m := by
   intro es
@@ -384,6 +389,7 @@ theorem appendFrom_above_unchanged : ∀ (es : List Entry) (lg : σ) (startIdx k
   | nil => intro lg startIdx k _ _ _ _ m; rfl
   | cons a es ih =>
     intro lg startIdx k hb h1 hk hsome m
+    have h1' : 1 ≤ startIdx := Nat.le_trans (LawfulLogStore.first_pos lg) h1
     rw [appendFrom] at hsome ⊢
     cases hg : LogStore.get lg startIdx with
     | some existing =>
@@ -393,7 +399,7 @@ theorem appendFrom_above_unchanged : ∀ (es : List Entry) (lg : σ) (startIdx k
           ((LogStore.get_isSome_iff lg startIdx).mp (by rw [hg]; rfl)).2
         by_cases hterm : existing.term == a.term
         · rw [if_pos hterm] at hsome ⊢
-          exact ih lg (startIdx + 1) k (by omega) (by omega) (by simp at hk ⊢; omega) hsome m
+          exact ih lg (startIdx + 1) k (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) (by simp at hk ⊢; omega) hsome m
         · exfalso
           rw [if_neg hterm] at hsome
           have hlast : LogStore.lastIndex (LogStore.truncFrom lg startIdx) = startIdx - 1 :=
@@ -402,7 +408,7 @@ theorem appendFrom_above_unchanged : ∀ (es : List Entry) (lg : σ) (startIdx k
               = startIdx := by rw [LogStore.lastIndex_append, hlast]; omega
           have hb2 := appendFrom_lastIndex_le es
             (LogStore.append (LogStore.truncFrom lg startIdx) a) (startIdx + 1)
-            (by rw [hlg']; omega) (by omega)
+            (by rw [hlg']; omega) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))
           rw [hlg'] at hb2
           have := ((LogStore.get_isSome_iff _ k).mp hsome).2
           simp at hk
@@ -420,11 +426,35 @@ theorem appendFrom_above_unchanged : ∀ (es : List Entry) (lg : σ) (startIdx k
         have hlg' : LogStore.lastIndex (LogStore.append lg a) = startIdx := by
           rw [LogStore.lastIndex_append]; omega
         have hb2 := appendFrom_lastIndex_le es (LogStore.append lg a) (startIdx + 1)
-          (by rw [hlg']; omega) (by omega)
+          (by rw [hlg']; omega) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))
         rw [hlg'] at hb2
         have := ((LogStore.get_isSome_iff _ k).mp hsome).2
         simp at hk
         omega
+
+/--
+**What `aeAccepts` tells you about the receiver's log.**
+
+The three facts the splice lemmas need, read straight off the check.
+-/
+theorem aeAccepts_facts {κ' : Type} [KVStore κ'] {s : NodeState σ κ'}
+    {term prevIdx prevTerm : Nat} (h : Protocol.aeAccepts s term prevIdx prevTerm = true) :
+    prevIdx ≤ LogStore.lastIndex s.log
+      ∧ (prevIdx ≠ 0 → LogStore.termAt s.log prevIdx = some prevTerm)
+      ∧ LogStore.firstIndex s.log ≤ prevIdx + 1 := by
+  unfold Protocol.aeAccepts Protocol.aeConsistent at h
+  simp only [Bool.and_eq_true, Bool.not_eq_true', decide_eq_false_iff_not, Bool.or_eq_true,
+    Bool.and_eq_true, beq_iff_eq] at h
+  obtain ⟨_, hc⟩ := h
+  rcases hc with ⟨hz, hf⟩ | ht
+  · exact ⟨by omega, fun hne => absurd hz hne, by omega⟩
+  · obtain ⟨e, he⟩ : ∃ e, LogStore.get s.log prevIdx = some e := by
+      unfold LogStore.termAt at ht
+      cases hq : LogStore.get s.log prevIdx with
+      | none => rw [hq] at ht; exact absurd ht (by simp)
+      | some e => exact ⟨e, rfl⟩
+    exact ⟨LogStore.le_lastIndex_of_get he, fun _ => ht,
+      Nat.le_trans (LogStore.firstIndex_le_of_get he) (Nat.le_succ _)⟩
 
 /-! ## How a step can change the log -/
 
@@ -440,6 +470,7 @@ theorem handleAppendEntries_log {s : NodeState σ κ}
             = appendFrom s.log (prevIdx + 1) es
           ∧ prevIdx ≤ LogStore.lastIndex s.log
           ∧ (prevIdx ≠ 0 → LogStore.termAt s.log prevIdx = some prevTerm)
+          ∧ LogStore.firstIndex s.log ≤ prevIdx + 1
           ∧ (handleAppendEntries s src term leaderId prevIdx prevTerm es lc).1.role
               = Role.follower
           ∧ s.currentTerm ≤ term) := by
@@ -453,9 +484,19 @@ theorem handleAppendEntries_log {s : NodeState σ κ}
     · exact Or.inl (by simpa using hmsd)
     · rename_i hcons
       right
-      have hc : ¬prevIdx = 0 → LogStore.termAt s.log prevIdx = some prevTerm := by
-        simpa [hmsd] using hcons
-      refine ⟨by simp [hmsd], ?_, hc, by simp, by omega⟩
+      have hcons0 : ¬prevIdx = 0 ∨ ¬LogStore.firstIndex s.log = 1 →
+          LogStore.termAt s.log prevIdx = some prevTerm := by
+        simpa [hmsd, aeConsistent] using hcons
+      have hc : ¬prevIdx = 0 → LogStore.termAt s.log prevIdx = some prevTerm :=
+        fun h => hcons0 (Or.inl h)
+      have hfw : LogStore.firstIndex s.log ≤ prevIdx + 1 := by
+        rcases Classical.em (prevIdx = 0 ∧ LogStore.firstIndex s.log = 1) with h0 | h0
+        · omega
+        · refine Nat.le_trans (LogStore.firstIndex_le_of_termAt (hcons0 ?_)) (Nat.le_succ _)
+          rcases Classical.em (prevIdx = 0) with hz | hz
+          · exact Or.inr (fun he => h0 ⟨hz, he⟩)
+          · exact Or.inl hz
+      refine ⟨by simp [hmsd], ?_, hc, hfw, by simp, by omega⟩
       by_cases h0 : prevIdx = 0
       · omega
       · have hg := hc h0
@@ -484,6 +525,7 @@ theorem handleAppendEntries_ack {s : NodeState σ' κ'} [LogStore σ'] [LawfulLo
           = appendFrom s.log (prevIdx + 1) es
       ∧ prevIdx ≤ LogStore.lastIndex s.log
       ∧ (prevIdx ≠ 0 → LogStore.termAt s.log prevIdx = some prevTerm)
+      ∧ LogStore.firstIndex s.log ≤ prevIdx + 1
       ∧ s.currentTerm ≤ term
       ∧ (handleAppendEntries s src term leaderId prevIdx prevTerm es lc).1.role
           = Role.follower := by
@@ -503,15 +545,25 @@ theorem handleAppendEntries_ack {s : NodeState σ' κ'} [LogStore σ'] [LawfulLo
       · exact absurd
           (Msg.appendEntriesResp.inj (Action.send.inj (List.mem_singleton.mp h')).2).2.1 (by simp)
     · rename_i hcons
-      have hc : ¬prevIdx = 0 → LogStore.termAt s.log prevIdx = some prevTerm := by
-        simpa [hmsd] using hcons
+      have hcons0 : ¬prevIdx = 0 ∨ ¬LogStore.firstIndex s.log = 1 →
+          LogStore.termAt s.log prevIdx = some prevTerm := by
+        simpa [hmsd, aeConsistent] using hcons
+      have hc : ¬prevIdx = 0 → LogStore.termAt s.log prevIdx = some prevTerm :=
+        fun h => hcons0 (Or.inl h)
+      have hfw : LogStore.firstIndex s.log ≤ prevIdx + 1 := by
+        rcases Classical.em (prevIdx = 0 ∧ LogStore.firstIndex s.log = 1) with h0 | h0
+        · omega
+        · refine Nat.le_trans (LogStore.firstIndex_le_of_termAt (hcons0 ?_)) (Nat.le_succ _)
+          rcases Classical.em (prevIdx = 0) with hz | hz
+          · exact Or.inr (fun he => h0 ⟨hz, he⟩)
+          · exact Or.inl hz
       dsimp only at h
       rcases List.mem_append.mp h with h' | h'
       · exact absurd h' maybeStepDown_no_send
       · rcases List.mem_cons.mp h' with h'' | h''
         · have hm := (Action.send.inj h'').2
           obtain ⟨ht, _, hmi⟩ := Msg.appendEntriesResp.inj hm
-          refine ⟨?_, hmi, ?_, ?_, hc, by omega, ?_⟩
+          refine ⟨?_, hmi, ?_, ?_, hc, hfw, by omega, ?_⟩
           · rw [ht]; simp [hmt]
           · rw [handleAppendEntries, if_neg hlt]
             dsimp only
@@ -520,7 +572,7 @@ theorem handleAppendEntries_ack {s : NodeState σ' κ'} [LogStore σ'] [LawfulLo
             simp [hmsd]
           · rcases Nat.eq_zero_or_pos prevIdx with h0 | h0
             · omega
-            · have hg := hc (by omega)
+            · have hg := hc (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))
               have hsome : (LogStore.get s.log prevIdx).isSome := by
                 cases hq : LogStore.get s.log prevIdx with
                 | none => unfold LogStore.termAt at hg; rw [hq] at hg; simp at hg
@@ -545,6 +597,7 @@ theorem step_log {σ' : Type} [LogStore σ'] [LawfulLogStore σ'] {κ' : Type} [
           ∧ (Protocol.step s ev).1.log = appendFrom s.log (pi + 1) es
           ∧ pi ≤ LogStore.lastIndex s.log
           ∧ (pi ≠ 0 → LogStore.termAt s.log pi = some pt)
+          ∧ LogStore.firstIndex s.log ≤ pi + 1
           ∧ (Protocol.step s ev).1.role = Role.follower
           ∧ s.currentTerm ≤ term) := by
   cases ev with
@@ -568,10 +621,11 @@ theorem step_log {σ' : Type} [LogStore σ'] [LawfulLogStore σ'] {κ' : Type} [
             · dsimp only; split <;> (split <;> simp)
       | appendEntries term l pi pt es lc =>
           rcases handleAppendEntries_log (s := s) (src := src) (term := term) (leaderId := l)
-            (prevIdx := pi) (prevTerm := pt) (es := es) (lc := lc) with h | ⟨h1, h2, h3, h4, h5⟩
+            (prevIdx := pi) (prevTerm := pt) (es := es) (lc := lc) with h | ⟨h1, h2, h3, hfw, h4, h5⟩
           · exact Or.inl (by rw [Protocol.step]; exact h)
           · exact Or.inr (Or.inr ⟨src, term, l, pi, pt, es, lc, rfl,
-              by rw [Protocol.step]; exact h1, h2, h3, by rw [Protocol.step]; exact h4, h5⟩)
+              by rw [Protocol.step]; exact h1, h2, h3, hfw,
+              by rw [Protocol.step]; exact h4, h5⟩)
       | appendEntriesResp term ok mi =>
           left
           rw [Protocol.step, handleAppendEntriesResp]
@@ -744,18 +798,18 @@ theorem appendFrom_match_below : ∀ (es : List Entry) (lg : σ) (startIdx B : N
   | cons a es ih =>
       intro lg startIdx B hb0 h k hk
       by_cases hb : startIdx ≤ B
-      · obtain ⟨x, hx, hxt⟩ := h 0 a (by simp) (by omega)
+      · obtain ⟨x, hx, hxt⟩ := h 0 a (by simp) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))
         rw [Nat.add_zero] at hx
         have hle : startIdx ≤ LogStore.lastIndex lg :=
           ((LogStore.get_isSome_iff lg startIdx).mp (by rw [hx]; rfl)).2
         rw [appendFrom, hx]
         dsimp only
         rw [if_pos (by simp [hxt])]
-        refine ih lg (startIdx + 1) B (by omega) ?_ k hk
+        refine ih lg (startIdx + 1) B (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega)) ?_ k hk
         intro n e hn hle'
-        obtain ⟨y, hy, hyt⟩ := h (n + 1) e (by simpa using hn) (by omega)
+        obtain ⟨y, hy, hyt⟩ := h (n + 1) e (by simpa using hn) (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))
         exact ⟨y, by rw [show startIdx + 1 + n = startIdx + (n + 1) by omega]; exact hy, hyt⟩
-      · exact appendFrom_get_of_lt (a :: es) lg startIdx k hb0 (by omega)
+      · exact appendFrom_get_of_lt (a :: es) lg startIdx k hb0 (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))
 
 
 variable {κ' : Type} [KVStore κ']
@@ -779,6 +833,7 @@ theorem handleAppendEntries_shape {s : NodeState σ κ'}
                   (min lc (LogStore.lastIndex (appendFrom s.log (prevIdx + 1) es)))
           ∧ prevIdx ≤ LogStore.lastIndex s.log
           ∧ (prevIdx ≠ 0 → LogStore.termAt s.log prevIdx = some prevTerm)
+          ∧ LogStore.firstIndex s.log ≤ prevIdx + 1
           ∧ s.currentTerm ≤ term) := by
   rw [handleAppendEntries]
   have hmsdL : (maybeStepDown s term (some leaderId)).1.log = s.log := by
@@ -794,18 +849,27 @@ theorem handleAppendEntries_shape {s : NodeState σ κ'}
       exact Or.inl ⟨by simpa using hmsdL, by simpa using hmsdC⟩
     · rename_i hcons
       right
-      refine ⟨by simp [hmsdL], by simp [hmsdL, hmsdC], ?_, ?_, by omega⟩
-      · have hg : ¬prevIdx = 0 → LogStore.termAt s.log prevIdx = some prevTerm := by
-          simpa [hmsdL] using hcons
+      have hcons0 : ¬prevIdx = 0 ∨ ¬LogStore.firstIndex s.log = 1 →
+          LogStore.termAt s.log prevIdx = some prevTerm := by
+        simpa [hmsdL, aeConsistent] using hcons
+      refine ⟨by simp [hmsdL], by simp [hmsdL, hmsdC], ?_, ?_, ?_, by omega⟩
+      · have hg : ¬prevIdx = 0 → LogStore.termAt s.log prevIdx = some prevTerm :=
+          fun h => hcons0 (Or.inl h)
         rcases Nat.eq_zero_or_pos prevIdx with h0 | h0
         · omega
         · have hsome : (LogStore.get s.log prevIdx).isSome := by
-            have := hg (by omega)
+            have := hg (by first | omega | (simp only [LawfulLogStore.first_append, LawfulLogStore.first_truncFrom]; omega))
             unfold LogStore.termAt at this
             cases hq : LogStore.get s.log prevIdx with
             | none => rw [hq] at this; simp at this
             | some z => rfl
           exact ((LogStore.get_isSome_iff s.log prevIdx).mp hsome).2
-      · simpa [hmsdL] using hcons
+      · exact fun h => hcons0 (Or.inl h)
+      · rcases Classical.em (prevIdx = 0 ∧ LogStore.firstIndex s.log = 1) with h0 | h0
+        · omega
+        · refine Nat.le_trans (LogStore.firstIndex_le_of_termAt (hcons0 ?_)) (Nat.le_succ _)
+          rcases Classical.em (prevIdx = 0) with hz | hz
+          · exact Or.inr (fun he => h0 ⟨hz, he⟩)
+          · exact Or.inl hz
 
 end RaftKV.Proof
