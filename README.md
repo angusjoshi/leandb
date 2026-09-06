@@ -11,9 +11,10 @@ backed by a Raft-replicated log. The protocol core is a pure function, and
 | Leader Completeness | `Proof.leaderCompleteness` |
 | State Machine Safety | `Proof.stateMachineSafety` |
 
-…and they hold in a model that includes **node crashes**: `Step` has a `crash`
-rule under which the durable trio (`currentTerm`, `votedFor`, the log) survives
-and everything else is rebuilt.
+…and they hold in a model that includes **node crashes** and **log compaction**:
+`Step` has a `crash` rule, under which the durable trio (`currentTerm`,
+`votedFor`, the log) survives and everything else is rebuilt, and a `compact`
+rule, under which any node may throw away any prefix of its log at any time.
 
 On top of those, **the store is proved linearizable** — one theorem, saying the
 whole thing:
@@ -42,6 +43,26 @@ answer the cluster ever gave is the answer a single, sequential key/value store
 would have given at that point in `L`; that order never contradicts real time;
 and every replica has executed a prefix of it.** The only assumption beyond
 reachability is that clients use distinct request ids.
+
+### Log compaction, and how the proof stayed modular
+
+A log that only grows is not a system, so compaction is part of the model rather
+than a layer bolted underneath it. The trick that kept it cheap: compaction is a
+fact about *storage*, not about Raft, so the safety invariants are stated over a
+proof-only **logical log** — `World.full i`, what node `i`'s log would be had it
+never compacted — and compaction does not touch it. `Step.compact` is then a
+one-line case in essentially every invariant, and the entire cost lives in one
+bridge invariant, `Proof.FullBridge`, whose `agree` clause says the real log is
+the logical log wherever the real log can still be read.
+
+The log interface's model became `List (Option Entry)` — a hole per discarded
+index — which is what let ~12.8k lines of protocol proof keep their shape: `get`
+already returned an `Option`, and a discarded index simply reads `none`.
+
+Not implemented: **`InstallSnapshot`**. A follower that falls behind a leader
+which has compacted past it cannot be caught up. That is a liveness gap, not a
+safety one — a leader that cannot send is indistinguishable from one whose
+messages are all lost, which the network model already allows.
 
 ### Storage, on a device that tears writes
 
@@ -125,7 +146,7 @@ interface's laws** — every downstream theorem transports unchanged.
 
 | Seam | Interface | Model | Now | Later |
 |---|---|---|---|---|
-| Log | `LogStore` / `LawfulLogStore` | `List Entry` | `ArrayLog` | segmented mmap'd log |
+| Log | `LogStore` / `LawfulLogStore` | `List (Option Entry)` | `ArrayLog` | segmented mmap'd log |
 | State machine | `KVStore` / `LawfulKVStore` | `Spec.KVModel` | `HashKV` | persistent/CoW map |
 | Wire format | `Codec` | round-trip law | token encoding | compact binary |
 | Transport | `World.sent` | adversarial network | conn-per-message TCP | pooled/pipelined |
@@ -148,11 +169,11 @@ RaftKV/
     Codec.lean           token encoding, round-trip proved
     Frame.lean           framing (trusted, tested)
     Network.lean         World / Step / Reachable + safety statements
-  Proof/                 30 modules, ~10.6k lines:
+  Proof/                 31 modules, ~12.8k lines:
                          quorum intersection, terms, votes, election safety,
                          log matching, change attribution, leader completeness,
                          state machine safety, state-machine refinement,
-                         linearizability
+                         linearizability, the logical log (compaction bridge)
   Storage/
     Disk.lean            the device: torn writes, three durability levels, one atomic cell
     Persist.lean         copy-on-write commit, proved crash-safe

@@ -15,8 +15,9 @@ X
 
 **Status: all four of Raft's safety properties are proved, the store is proved
 linearizable** (`Proof.linearizable`), and both hold in a model that includes
-**node crashes** — with the durable implementation proved crash-safe on a device
-that tears writes (`Disk.Format.commit_crash_safe`). See below.
+**node crashes** and **log compaction** — with the durable implementation proved
+crash-safe on a device that tears writes (`Disk.Format.commit_crash_safe`). See
+below.
 
 ## Proved
 
@@ -24,7 +25,7 @@ that tears writes (`Disk.Format.commit_crash_safe`). See below.
 | Theorem | Statement |
 |---|---|
 | `LogStore.get_isSome_iff`, `get_append_of_le`, `get_append_self`, `get_truncFrom_of_lt`, `lastIndex_truncFrom_le` | The log interface's derived operations behave as the `List Entry` model says, for **every** lawful implementation |
-| `ArrayLog` instances | The array-backed log satisfies all six `LawfulLogStore` laws |
+| `ArrayLog` instances | The array-backed log satisfies every `LawfulLogStore` law, the compaction laws included |
 | `KVStore.applyCmd_refines` | The executable state machine produces exactly the reply and the state the sequential spec demands |
 | `KVStore.applyAll_refines` | ...and this extends to whole command sequences |
 | `HashKV` instances | The hash-map state machine satisfies all four `LawfulKVStore` laws |
@@ -103,7 +104,7 @@ collide with one of its own earlier entries.
 | `Proof.step_log` | Complete description of how one step can change a node's log |
 | `Proof.step_appendEntries_payload` | Every `appendEntries` a node emits is literally `appendEntriesTo` of its own post-state, so its payload is a tail of the sender's log |
 | `Proof.bInv_reachable` | In every reachable world, every entry in any log **and** every entry in any payload on the wire was minted at that index |
-| **`Proof.log_entry_unique`** | **If two replicas hold entries at the same log index with the same term, those entries are identical.** Raft's Log Matching Property, part one, on the actual replicated state |
+| **`Proof.log_entry_unique`** | **If two replicas hold entries at the same log index with the same term, those entries are identical.** Raft's Log Matching Property, part one, on the actual replicated state — stated over the logical logs `w.full`, which `Proof.full_get` turns back into the real ones wherever they can still be read |
 
 ### Log Matching, part two — agreeing logs agree all the way down
 | Theorem | Statement |
@@ -118,8 +119,11 @@ Statement, as machine-checked:
 ```lean
 theorem logMatching (hnd : members.Nodup) (h : Reachable members w) : LogMatching w
 -- LogMatching w = ∀ i j idx e₁ e₂,
---   get (w.nodes i).log idx = some e₁ → get (w.nodes j).log idx = some e₂ →
---   e₁.term = e₂.term → ∀ k ≤ idx, get (w.nodes i).log k = get (w.nodes j).log k
+--   get (w.full i) idx = some e₁ → get (w.full j) idx = some e₂ →
+--   e₁.term = e₂.term → ∀ k ≤ idx, get (w.full i) k = get (w.full j) k
+-- `w.full i` is node `i`'s *logical* log: what it would hold had it never
+-- compacted. `Proof.full_get` says it is the real log wherever the real log can
+-- still be read, so this implies the statement about `(w.nodes i).log`.
 ```
 
 ### Term bounds
@@ -495,9 +499,10 @@ and what it comes back with is always one of the states the model allows.
 3. **That the operating system's `fsync` reaches stable storage.** On macOS the
    FFI shim asks for `F_FULLFSYNC` first, which bypasses the drive's write cache.
 4. **The log fits in a region.** The two-region format used by the node store is
-   capacity-bounded. The copy-on-write B-tree below lifts that limit and is what
-   log compaction wants; it is implemented and tested but not yet the node
-   store's format.
+   capacity-bounded. Log compaction (below) bounds what has to fit — the live
+   window rather than all of history — but it does not remove the bound. The
+   copy-on-write B-tree lifts it properly; it is implemented and tested but not
+   yet the node store's format.
 
 ### The copy-on-write B-tree
 
@@ -603,6 +608,204 @@ vote. Forgetting `votedFor` alone fails on only 2 schedules in 300 — a useful
 reminder that testing does not substitute for the proof, since a 0.7% failure
 rate is exactly the kind that survives a test suite and bites in production.
 
+## Log compaction
+
+A log that only grows is not a system. Compaction is now **in the model** —
+`Step` has a sixth rule, `compact` — and every safety property above, plus
+`linearizable`, is proved in a model where any node may discard any prefix of
+its log at any time.
+
+### What compaction is
+
+`Protocol.compactTo` discards everything the state machine has already absorbed
+and records the state machine itself in its place:
+
+```lean
+def compactTo (s : NodeState σ κ) : NodeState σ κ :=
+  if LogStore.firstIndex s.log ≤ s.lastApplied + 1
+      ∧ s.lastApplied + 1 ≤ LogStore.lastIndex s.log then
+    { s with log := LogStore.compact s.log (s.lastApplied + 1),
+             snapIndex := s.lastApplied, snapKV := s.kv }
+  else s
+```
+
+The cut is at `lastApplied + 1`: entries at or below `lastApplied` go, and the
+entry just above stays, because the consistency check needs an anchor. A no-op
+unless there is something to discard and something to keep, so it is total and
+needs no precondition at its call sites.
+
+### The interface, extended
+
+`LogStore` gains `firstIndex` and `compact`, and `LawfulLogStore`'s model
+becomes `List (Option Entry)` — a hole for each discarded index:
+
+```lean
+class LogStore (σ : Type) where
+  ...
+  firstIndex : σ → Nat        -- the lowest index still readable
+  compact    : σ → Nat → σ    -- discard everything below `i`
+
+class LawfulLogStore (σ) [LogStore σ] where
+  toModel : σ → List (Option Entry)
+  model_get     : ∀ s i, get s i = if i = 0 then none else ((toModel s)[i-1]?).join
+  model_compact : ∀ s i, firstIndex s ≤ i → i ≤ size s →
+    toModel (compact s i) = List.replicate (i-1) none ++ (toModel s).drop (i-1)
+  first_compact : ∀ s i, firstIndex s ≤ i → i ≤ size s → firstIndex (compact s i) = i
+  get_lt_first  : ∀ s k, k < firstIndex s → get s k = none
+  get_isSome    : ∀ s k, firstIndex s ≤ k → k ≤ size s → (get s k).isSome
+  ...
+```
+
+This is the change that made the rest affordable. `get` already returned
+`Option Entry`, so a `List (Option Entry)` model leaves *every* `get`-shaped
+lemma in the 12.8k lines of protocol proof with its type and its shape unchanged;
+a discarded index simply reads `none`, exactly as an index past the end always
+did. `get_lt_first` and `get_isSome` together say the holes are precisely a
+prefix, which is the only structural fact anything downstream needs.
+
+`ArrayLog` implements it as a base offset plus an `Array.extract`, so compaction
+costs one copy of the live window and nothing else.
+
+### Two places the protocol had to change
+
+Compaction makes `get` return `none` for two different reasons — *not yet
+written* and *no longer held* — and exactly two decisions in the protocol had
+been conflating them.
+
+| | Before | After |
+|---|---|---|
+| The follower's consistency check | `prevIdx == 0 \|\| termAt log prevIdx == some prevTerm` | `Protocol.aeConsistent`: the `prevIdx == 0` case additionally requires `firstIndex log == 1`, so a payload that would land in the discarded region is refused rather than silently accepted against a phantom anchor |
+| Where a leader may start a payload | `max 1 (nextIndex peer)` | `max (LogStore.sendFloor log) (nextIndex peer)` — `sendFloor` is `1` for an uncompacted log and `firstIndex + 1` otherwise, since `AppendEntries` names the entry *below* the payload and the sender must still hold it |
+
+Both are identity on an uncompacted log, so nothing about the pre-compaction
+behaviour moved.
+
+### The ghost logical log — how the proof stayed modular
+
+The naive approach is to weaken every invariant with a window guard: "the logs
+agree at every index *both nodes still hold*". This does not work, and not
+merely as a matter of effort. `AckHold` and `leaderLog_both` become **outright
+false** under it: two recorded ghost logs may have discarded different amounts,
+and the guarded statement no longer composes with itself. Roughly a day was
+spent discovering this, and the branch was reverted.
+
+What works is to observe that compaction is not a fact about Raft at all — it is
+a fact about *storage*. So the safety invariants are stated over a proof-only
+**logical log**, `World.full : Nat → σ`: what node `i`'s log would be had it
+never compacted. `fullStep` advances it alongside the real one, making the same
+two decisions the real node makes:
+
+```lean
+def fullStep (s : NodeState σ κ) (fl : σ) (ev : Event) : σ :=
+  match ev with
+  | .clientReq rid cmd =>
+      if s.role = Role.leader then
+        LogStore.append fl { term := s.currentTerm, cmd := cmd, reqId := rid }
+      else fl
+  | .recv _ (.appendEntries term _ prevIdx prevTerm es _) =>
+      if Protocol.aeAccepts s term prevIdx prevTerm then appendFrom fl (prevIdx + 1) es else fl
+  | _ => fl
+```
+
+Note that the conditions are `s`'s — the *real* node's — decisions, not
+recomputed against `fl`. That is why `aeAccepts` was factored out of
+`handleAppendEntries` into its own definition: a second copy of the condition
+could drift from the first, and here it provably cannot.
+
+`World.compactAt` does not touch `full` at all. So `Step.compact` is a one-line
+case in essentially every invariant in `RaftKV/Proof/` — the ghost lists do not
+move, the logical logs do not move, and the fields the invariant mentions are
+unchanged. **All of the cost is concentrated in one place**, a single bridge
+invariant:
+
+```lean
+structure FullBridge (w : World σ κ) : Prop where
+  first  : ∀ i, LogStore.firstIndex (w.full i) = 1
+  last   : ∀ i, LogStore.lastIndex (w.full i) = LogStore.lastIndex (w.nodes i).log
+  agree  : ∀ i k, LogStore.firstIndex (w.nodes i).log ≤ k →
+             LogStore.get (w.nodes i).log k = LogStore.get (w.full i) k
+  window : ∀ i, LogStore.firstIndex (w.nodes i).log = 1
+             ∨ LogStore.firstIndex (w.nodes i).log ≤ LogStore.lastIndex (w.nodes i).log
+  snap   : ∀ i, LogStore.firstIndex (w.nodes i).log = (w.nodes i).snapIndex + 1
+             ∧ (w.nodes i).snapIndex ≤ (w.nodes i).lastApplied
+```
+
+| Theorem | Statement |
+|---|---|
+| `Proof.appendFrom_bridge` | **A splice makes the same decisions on both logs.** Two logs agreeing on the live window, spliced at an index inside it, agree again afterwards — the conflict scan cannot see the difference, because the payload starts above the floor |
+| **`Proof.fullBridge_reachable`** | **`FullBridge` holds in every reachable world**, compaction steps included. The `compact` case is the interesting one: `firstIndex` moves up, `agree` survives because it was already only claimed above the old floor, and `snap` is re-established by `compactTo` setting `snapIndex := lastApplied` |
+| `Proof.full_get` | The logical log is the real log wherever the real log can still be read |
+
+`LogMatching` and `StateMachineSafety` are now stated over `w.full`, and
+`full_get` turns them back into statements about `(w.nodes i).log` wherever a
+node can still be asked. That is the honest form: a node cannot disagree about
+an entry it has thrown away, and the theorem should not pretend otherwise.
+
+This is the reusable part. Any future storage-level operation that changes what
+a node *holds* without changing what it *logically decided* — a segmented log
+dropping a segment, a snapshot install, a truncation of a suffix already known
+dead — is a `Step` rule that leaves `full` alone plus one case of
+`fullBridge_step`. The 12.8k lines above it do not move.
+
+### The durable snapshot
+
+Compaction forces a change that the design had until now avoided:
+`NodeState` gains `snapIndex : Nat` and `snapKV : κ`, and the durable projection
+`Persistent σ` gains `snapIndex` and `snapPairs : List (String × String)`.
+Recovery starts the state machine from the snapshot rather than from an empty
+map:
+
+```lean
+{ initState cfg with
+    currentTerm := p.currentTerm, votedFor := p.votedFor, log := p.log,
+    snapIndex := p.snapIndex, snapKV := KVStore.ofPairs p.snapPairs,
+    kv := KVStore.ofPairs p.snapPairs,
+    lastApplied := p.snapIndex, commitIndex := p.snapIndex }
+```
+
+This is not cosmetic. Before compaction, a restart could set `lastApplied := 0`
+and replay, because the whole log was there. Once a prefix is gone that is
+unsound — the `snap` clause of `FullBridge` is exactly the statement that makes
+a restart legitimate again: the window starts one past the snapshot, so every
+entry a recovered node still has to replay is still in its log.
+
+The cost is an obligation on `KVStore`, which had deliberately avoided demanding
+iteration:
+
+| | |
+|---|---|
+| `KVStore.toPairs`, `KVStore.ofPairs` | serialise and rebuild the state machine |
+| `LawfulKVStore.model_pairs` | `toModel (ofPairs (toPairs m)) = toModel m` — the round trip is the identity *on the model*, which is all the proof uses. An implementation may reorder, deduplicate or re-hash freely |
+| `HashKV` | satisfies it |
+
+Stated plainly because it is a real narrowing of the interface: a state machine
+that cannot enumerate itself cannot be snapshotted, and therefore cannot be used
+with compaction. `snapPairs` is a `List (String × String)` rather than a `κ`
+precisely so that the durable format needs no `ByteCodec κ`.
+
+### In the running system
+
+* `Runtime/Server.lean` compacts every `compactEvery := 1024` applied entries,
+  *inside the same durable write* as the step that triggered it. That is exactly
+  the model's step followed by `Step.compact`: compaction emits nothing, so no
+  observer can distinguish the two orders.
+* `Runtime/Random.lean` gains a compaction event, and the sweeps run it in the
+  mix.
+
+### What is not implemented: InstallSnapshot
+
+**A follower that has fallen behind a leader which compacted past that
+follower's `nextIndex` cannot be caught up.** The leader's `sendFloor` refuses to
+build a payload it cannot anchor, and there is no `InstallSnapshot` RPC to send
+the state machine instead. The follower stalls until it is restarted from a
+copy, or until the cluster is reconfigured.
+
+This is a **liveness** gap, and safety is unaffected: every theorem above holds
+in this world, because a leader that cannot send is indistinguishable from one
+whose messages are all lost, which the network model already permits. It is
+listed here rather than in "limits of the running system" because it is the one
+place where the model is complete and the protocol is deliberately not.
+
 ## Not proved
 
 - **Liveness** — deliberately out of scope; Raft guarantees none without timing
@@ -617,15 +820,24 @@ rate is exactly the kind that survives a test suite and bites in production.
   `RaftKV.Posix`) are trusted, and listed as such below.
 - **The B-tree's checksums.** The tree's four properties are proved; the CRC-32
   page checks are tested only, deliberately — see below.
+- **Catching up a follower that a leader has compacted past.** There is no
+  `InstallSnapshot` RPC. Safety is untouched — see "What is not implemented"
+  above — but such a follower makes no further progress.
 
 ## The proved properties, also tested
 
 Because `step` is pure, randomised schedules with message loss, reordering,
 duplication and concurrent elections are reproducible from a seed
-(`RaftKV/Runtime/Random.lean`, driven by `Test/Random.lean`). Four properties
-are checked after every run — one leader per term, entries determined by index
-and term, prefixes agreeing below a shared entry, and applied entries never
-disagreeing.
+(`RaftKV/Runtime/Random.lean`, driven by `Test/Random.lean`). The event mix
+includes crashes and **log compaction**. Four properties are checked after every
+run — one leader per term, entries determined by index and term, prefixes
+agreeing below a shared entry, and applied entries never disagreeing.
+
+The prefix check carries the same window guard the theorem does: two nodes are
+required to agree only at indices both still hold. Adding compaction without it
+produced 131/84/33/67 failures across the four sweeps — the check was demanding
+agreement at indices that had been discarded, which is the guarded-invariant
+mistake the proof also had to learn, showing up in the simulator first.
 
 Result: **0 failures** across 710 schedules — 300 × 400 steps on 3 nodes,
 200 × 800 on 5 nodes, 60 × 1200 on 3 nodes, and 150 × 600 on 4 nodes. The sweep
@@ -676,7 +888,10 @@ restarting them recovers term, vote and log; committed keys read back, and a
 committed *deletion* stays deleted. One limit remains:
 
 * **The whole image is rewritten on every durable change**, since the two-region
-  format is a full-image copy-on-write. That is O(log size) per append, which is
-  fine for correctness and wrong for production. The copy-on-write B-tree is
-  built and tested; making it the node store's format — and with it, log
-  compaction — is the next step.
+  format is a full-image copy-on-write. That is O(live window) per append —
+  compaction bounds it, which it did not before, but it is still linear in
+  something that should be constant. The copy-on-write B-tree is built and
+  tested; making it the node store's format is the next step.
+* **No `InstallSnapshot`.** A follower that falls far enough behind a leader that
+  has compacted past it stops making progress. Safety holds; that follower does
+  not catch up.
