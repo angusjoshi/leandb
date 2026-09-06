@@ -72,6 +72,7 @@ theorem voteDom_step {members : List Nat} {w w' : World σ κ}
           | requestVote a b c d => simp at heq
           | appendEntries a b c d e f => simp at heq
           | appendEntriesResp a b c => simp at heq
+          | installSnapshot a b c d e => simp at heq
           | requestVoteResp t g =>
               cases g with
               | false => simp at heq

@@ -217,7 +217,7 @@ theorem llInv_step {members : List Nat} {w w' : World σ κ}
       rcases List.mem_append.mp hmem with h' | h'
       · obtain ⟨lg, hlg1, hlg2⟩ := h.created c k e h'
         exact ⟨lg, leaderLog_mono hlg1, hlg2⟩
-      · obtain ⟨h1, hlead, hterm, _, hget⟩ := createdOf_get h'
+      · obtain ⟨h1, hlead, hterm, _, hget⟩ := createdOf_get_world h'
         subst h1
         refine ⟨fullStep w c ev, ?_, hget⟩
         rw [act_leaderLogs]

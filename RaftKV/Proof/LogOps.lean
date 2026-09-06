@@ -836,7 +836,7 @@ theorem step_log {σ' : Type} [LogStore σ'] [LawfulLogStore σ'] {κ' : Type} [
           · have hlt : ¬ (term < s.currentTerm) := by
               rw [snapInstalls] at hi
               simp only [Bool.and_eq_true, Bool.not_eq_true'] at hi
-              simpa using hi.1.1.1
+              simpa using hi.1.1.1.1
             refine Or.inr (Or.inr (Or.inr ⟨src, term, lid, lastIdx, anchor, pairs, rfl, hi,
               ?_, ?_, ?_, ?_, ?_, by omega⟩)) <;>
               (rw [Protocol.step, handleInstallSnapshot, if_neg hlt]

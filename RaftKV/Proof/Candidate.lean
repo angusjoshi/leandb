@@ -25,6 +25,12 @@ theorem leader_not_to_candidate {s : NodeState σ κ} {ev : Event}
   cases ev with
   | recv src m =>
       cases m with
+      | installSnapshot term lid li a ps =>
+          by_cases hlt : term < s.currentTerm
+          · rw [Protocol.step, handleInstallSnapshot_stale s term lid li a ps hlt, hl]
+            exact fun h => Role.noConfusion h
+          · rw [Protocol.step, handleInstallSnapshot_follower s term lid li a ps hlt]
+            exact fun h => Role.noConfusion h
       | requestVote term candId li lt =>
           rw [Protocol.step, handleRequestVote]
           split
@@ -72,7 +78,8 @@ theorem candidate_log_stable {s : NodeState σ κ} {ev : Event}
     (h : (Protocol.step s ev).1.role = Role.candidate) :
     (Protocol.step s ev).1.log = s.log := by
   rcases step_log s ev with hl | ⟨rid, cmd, hev, hl⟩ |
-    ⟨src, term, l, pi, pt, es, lc, hev, hl, _, _, _, hrole, _⟩
+    ⟨src, term, l, pi, pt, es, lc, hev, hl, _, _, _, hrole, _⟩ |
+    ⟨src, term, lid, lastIdx, anchor, pairs, hev, _, _, hrole, _⟩
   · exact hl
   · exfalso
     subst hev
@@ -90,6 +97,9 @@ theorem candidate_log_stable {s : NodeState σ κ} {ev : Event}
     rw [this] at h; exact Role.noConfusion h
   · exfalso
     -- replication always demotes the receiver to follower
+    rw [hrole] at h; exact Role.noConfusion h
+  · exfalso
+    -- and so does a snapshot
     rw [hrole] at h; exact Role.noConfusion h
 
 /-- **Becoming a candidate strictly advances the term.** -/
@@ -140,7 +150,8 @@ theorem leader_log_unchanged {s : NodeState σ κ} {ev : Event}
     (hpost : (Protocol.step s ev).1.role = Role.leader) (hpre : s.role ≠ Role.leader) :
     (Protocol.step s ev).1.log = s.log := by
   rcases step_log s ev with hl | ⟨rid, cmd, hev, hl⟩ |
-    ⟨src, term, l, pi, pt, es, lc, hev, hl, _, _, _, hrole, _⟩
+    ⟨src, term, l, pi, pt, es, lc, hev, hl, _, _, _, hrole, _⟩ |
+    ⟨src, term, lid, lastIdx, anchor, pairs, hev, _, _, hrole, _⟩
   · exact hl
   · exfalso
     subst hev
@@ -153,13 +164,16 @@ theorem leader_log_unchanged {s : NodeState σ κ} {ev : Event}
       simp only [LogStore.lastIndex_append] at this
       omega
   · exfalso; rw [hrole] at hpost; exact Role.noConfusion hpost
+  · exfalso; rw [hrole] at hpost; exact Role.noConfusion hpost
 
 /-- The same for the logical log: becoming leader touches neither. -/
-theorem leader_full_unchanged {s : NodeState σ κ} {fl : σ} {ev : Event}
-    (hpost : (Protocol.step s ev).1.role = Role.leader) (hpre : s.role ≠ Role.leader) :
-    fullStep s fl ev = fl := by
-  rcases full_step s fl ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
-    ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩
+theorem leader_full_unchanged {w : World σ κ} {i : Nat} {ev : Event}
+    (hpost : (Protocol.step (w.nodes i) ev).1.role = Role.leader)
+    (hpre : (w.nodes i).role ≠ Role.leader) :
+    fullStep w i ev = w.full i := by
+  rcases world_full_step w i ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
+    ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩ |
+    ⟨src, term, lid, lastIdx, anchor, pairs, hev, hi, hct⟩
   · exact hl
   · exact absurd hlead hpre
   · exfalso
@@ -168,6 +182,11 @@ theorem leader_full_unchanged {s : NodeState σ κ} {fl : σ} {ev : Event}
     rw [Protocol.step, handleAppendEntries, if_neg (by omega)] at hpost
     dsimp only at hpost
     split at hpost <;> simp at hpost
+  · exfalso
+    subst hev
+    have hlt : ¬ (term < (w.nodes i).currentTerm) := by omega
+    rw [Protocol.step, handleInstallSnapshot_follower _ _ _ _ _ _ hlt] at hpost
+    exact Role.noConfusion hpost
 
 /-! ## The advertised log is the real one -/
 
@@ -294,17 +313,17 @@ theorem candInv_step {members : List Nat} {w w' : World σ κ}
           · rw [e1, Protocol.compactTo]
             split
             · rename_i hg
-              exact (LogStore.lastIndex_compact _ _ hg.1 hg.2).symm
+              exact (LogStore.lastIndex_compact _ _ hg.2.1 hg.2.2).symm
             · rfl
           · rw [e2, Protocol.compactTo]
             split
             · rename_i hg
               unfold LogStore.lastTerm LogStore.termAt
-              rw [LogStore.lastIndex_compact _ _ hg.1 hg.2]
+              rw [LogStore.lastIndex_compact _ _ hg.2.1 hg.2.2]
               show _ = (Option.map Entry.term (LogStore.get
-                (LogStore.compact (w.nodes c).log ((w.nodes c).lastApplied + 1))
+                (LogStore.compact (w.nodes c).log ((w.nodes c).lastApplied))
                 (LogStore.lastIndex (w.nodes c).log))).getD 0
-              rw [LogStore.get_compact_of_le _ _ _ hg.1 hg.2 (by omega)]
+              rw [LogStore.get_compact_of_le _ _ _ hg.2.1 hg.2.2 (by omega)]
             · rfl
         · rw [compactAt_nodes_ne _ _ hck] at hterm hrole ⊢
           exact h.log c d U cid li lt hp hterm hrole

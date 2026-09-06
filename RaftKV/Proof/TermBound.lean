@@ -27,12 +27,19 @@ def MsgTermsBounded (w : World σ κ) : Prop :=
   ∀ (src dst t l pi pt : Nat) (es : List Entry) (lc n : Nat) (e : Entry),
     (src, dst, Msg.appendEntries t l pi pt es lc) ∈ w.sent → es[n]? = some e → e.term ≤ t
 
+/-- Nor does a recorded leader snapshot, beyond the term it was recorded in. -/
+def SnapTermsBounded (w : World σ κ) : Prop :=
+  ∀ i T n ps (lg : σ), (i, T, n, ps, lg) ∈ w.snapLogs →
+    ∀ k e, LogStore.get lg k = some e → e.term ≤ T
+
 /-- The term-bound invariants. -/
 structure TInv (members : List Nat) (w : World σ κ) : Prop where
   /-- Logs are bounded. -/
   logs : LogTermsBounded w
   /-- Payloads are bounded. -/
   msgs : MsgTermsBounded w
+  /-- Recorded snapshots are bounded. -/
+  snaps : SnapTermsBounded w
 
 theorem tInv_init (members : List Nat) : TInv (σ := σ) (κ := κ) members (World.init members) where
   logs := by
@@ -44,6 +51,7 @@ theorem tInv_init (members : List Nat) : TInv (σ := σ) (κ := κ) members (Wor
     simp only [LogStore.lastIndex_empty, LawfulLogStore.first_empty] at hs
     omega
   msgs := by intro src dst t l pi pt es lc n e h; simp [World.init] at h
+  snaps := by intro i T n ps lg h; simp [World.init] at h
 
 /-- **The term-bound invariants are preserved by every step.** -/
 theorem tInv_step {members : List Nat} {w w' : World σ κ}
@@ -61,8 +69,9 @@ theorem tInv_step {members : List Nat} {w w' : World σ κ}
         rw [act_full_self] at hget
         rw [act_nodes_self]
         have hmono := step_term_mono (w.nodes i) ev
-        rcases full_step (w.nodes i) (w.full i) ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
-          ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩
+        rcases world_full_step w i ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
+          ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩ |
+          ⟨src, term, lid, lastIdx, anchor, pairs, hev, hi, hct⟩
         · rw [hl] at hget
           exact Nat.le_trans (h.logs i k e hget) hmono
         · rw [hl, LogStore.get_append] at hget
@@ -92,10 +101,44 @@ theorem tInv_step {members : List Nat} {w w' : World σ κ}
                 (Event.recv src (Msg.appendEntries term l pi pt es lc))).1.currentTerm := by
               rw [Protocol.step, handleAppendEntries_term_eq]; omega
             omega
+        · -- an installed snapshot: the sender's record is bounded by its own term
+          obtain ⟨lg, hrec, hget', hlg1, hfl⟩ :=
+            snapInstall_facts (fullBridge_reachable hr)
+              (hdel src (Msg.installSnapshot term lid lastIdx anchor pairs) hev) hi
+          rw [hev, hfl, LogStore.get_truncFrom] at hget
+          split at hget
+          · have hb := h.snaps _ _ _ _ _ hrec k e hget
+            have : term ≤ (Protocol.step (w.nodes i)
+                (Event.recv src (Msg.installSnapshot term lid lastIdx anchor pairs))).1.currentTerm := by
+              rw [Protocol.step, handleInstallSnapshot_term_eq]; omega
+            rw [hev]; omega
+          · simp at hget
       · rw [act_full_ne _ _ _ hij] at hget
         rw [act_nodes_ne _ _ _ hij]
         exact h.logs i k e hget
-    refine ⟨hlogs, ?_⟩
+    have hsnaps : SnapTermsBounded (w.act j ev) := by
+      intro i T n ps lg hm k e hget
+      rw [act_snapLogs] at hm
+      rcases List.mem_append.mp hm with hm' | hm'
+      · exact h.snaps i T n ps lg hm' k e hget
+      · rw [snapLogOf] at hm'
+        split at hm'
+        · rcases List.mem_singleton.mp hm' with hq
+          have hlg : lg = fullStep w j ev := by
+            have hq2 := congrArg (fun r => r.2.2.2.2) hq
+            simpa using hq2
+          have hij : i = j := by
+            have hq1 := congrArg (fun r => r.1) hq
+            simpa using hq1
+          have hT : T = (Protocol.step (w.nodes j) ev).1.currentTerm := by
+            have hq1 := congrArg (fun r => r.2.1) hq
+            simpa using hq1
+          subst hij
+          rw [hT]
+          have := hlogs i k e (by rw [act_full_self, ← hlg]; exact hget)
+          rwa [act_nodes_self] at this
+        · simp at hm'
+    refine ⟨hlogs, ?_, hsnaps⟩
     intro src dst t l pi pt es lc n e hp hn
     rw [act_sent] at hp
     rcases List.mem_append.mp hp with hp' | hp'
@@ -135,7 +178,7 @@ theorem tInv_step {members : List Nat} {w w' : World σ κ}
   | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | crash k hk =>
-      refine ⟨?_, ?_⟩
+      refine ⟨?_, ?_, ?_⟩
       · intro i k' e hget
         rw [crash_full] at hget
         by_cases hik : i = k
@@ -145,8 +188,10 @@ theorem tInv_step {members : List Nat} {w w' : World σ κ}
         · rw [crash_nodes_ne _ _ hik]; exact h.logs i k' e hget
       · intro src dst t l pi pt es lc n e hp hn
         rw [crash_sent] at hp; exact h.msgs src dst t l pi pt es lc n e hp hn
+      · intro i T n ps lg hm k' e hget
+        rw [crash_snapLogs] at hm; exact h.snaps i T n ps lg hm k' e hget
   | compact k hk =>
-      refine ⟨?_, ?_⟩
+      refine ⟨?_, ?_, ?_⟩
       · intro i k' e hget
         rw [compactAt_full] at hget
         by_cases hik : i = k
@@ -156,6 +201,8 @@ theorem tInv_step {members : List Nat} {w w' : World σ κ}
         · rw [compactAt_nodes_ne _ _ hik]; exact h.logs i k' e hget
       · intro src dst t l pi pt es lc n e hp hn
         rw [compactAt_sent] at hp; exact h.msgs src dst t l pi pt es lc n e hp hn
+      · intro i T n ps lg hm k' e hget
+        rw [compactAt_snapLogs] at hm; exact h.snaps i T n ps lg hm k' e hget
 
 /-- **Entry terms never exceed their holder's term, in any reachable world.** -/
 theorem tInv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :
@@ -237,7 +284,7 @@ theorem createdTermPos_step {members : List Nat} {w w' : World σ κ}
     rw [act_created] at hmem
     rcases List.mem_append.mp hmem with h' | h'
     · exact h c k e h'
-    · obtain ⟨h1, hlead, hterm, _, _⟩ := createdOf_get h'
+    · obtain ⟨h1, hlead, hterm, _, _⟩ := createdOf_get_world h'
       subst h1
       have := hpos c (by rw [act_nodes_self, hlead]; exact fun hq => Role.noConfusion hq)
       rw [act_nodes_self] at this

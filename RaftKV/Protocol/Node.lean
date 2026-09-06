@@ -329,10 +329,20 @@ def snapHeld (s : NodeState σ κ) (lastIdx : Nat) (anchor : Entry) : Bool :=
 /--
 Will this snapshot actually be installed?
 
-Three ways it is not: the sender is stale; the receiver already holds the anchor
-and so needs nothing; or the snapshot does not reach past what the receiver
-already considers committed, in which case installing it would throw away
-committed entries. `2 ≤ lastIdx` is the same lower bound `compactTo` maintains.
+Four ways it is not: the sender is stale; the receiver already holds the anchor
+and so needs nothing; the snapshot does not reach past what the receiver already
+considers committed, so installing it would throw away committed entries; or it
+does not cover the receiver's whole log, so installing it would drop entries the
+receiver had acknowledged. `2 ≤ lastIdx` is the same lower bound `compactTo`
+maintains.
+
+That last condition is a real restriction, and it is why this is not a complete
+answer to catching a follower up: a follower whose log runs *past* the leader's
+snapshot point but disagrees below it still cannot be served. Such a follower is
+holding uncommitted entries from an older term above a committed prefix it does
+not have. Fixing that needs the snapshot to replace a prefix while retaining the
+tail, which is a larger change; the common case — a follower that has simply
+fallen behind — is covered.
 
 Factored out because the model in `RaftKV.Protocol.Network` has to make the same
 decision about the ghost logical log, and a second copy of the condition could
@@ -341,6 +351,7 @@ drift from this one.
 def snapInstalls (s : NodeState σ κ) (term lastIdx : Nat) (anchor : Entry) : Bool :=
   !(decide (term < s.currentTerm)) && !snapHeld s lastIdx anchor
     && decide (2 ≤ lastIdx) && decide (s.commitIndex < lastIdx)
+    && decide (LogStore.lastIndex s.log ≤ lastIdx)
 
 /--
 Follower side of snapshot transfer.

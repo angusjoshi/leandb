@@ -146,6 +146,9 @@ theorem step_ack_shape {s : NodeState σ κ} {ev : Event} {to t m : Nat}
           exact absurd heq (by simp)
       | requestVoteResp a b => exact absurd h handleRequestVoteResp_no_aer
       | appendEntriesResp a b c => exact absurd h handleAppendEntriesResp_no_aer
+      | installSnapshot a b c d e =>
+          rw [Protocol.step] at h
+          exact absurd h handleInstallSnapshot_no_send
       | appendEntries term l pi pt es lc =>
           rw [Protocol.step] at h ⊢
           obtain ⟨h1, h2, h3, h4, h5, h6, h7, h8, h9⟩ := handleAppendEntries_ack h

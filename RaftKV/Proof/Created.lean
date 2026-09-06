@@ -85,6 +85,23 @@ theorem createdOf_get {j c k : Nat} {e : Entry} {ev : Event} {pre : NodeState σ
       rw [h3, hlog, LogStore.lastIndex_append, hek]
       exact LogStore.get_append_self _ _
 
+
+/-- The same, in the world, where the logical log is the world's own. -/
+theorem createdOf_get_world {w : World σ κ} {j c k : Nat} {e : Entry} {ev : Event}
+    (h : (c, k, e) ∈ createdOf j (Protocol.step (w.nodes j) ev).1 (fullStep w j ev) ev) :
+    c = j ∧ (Protocol.step (w.nodes j) ev).1.role = Role.leader
+      ∧ e.term = (Protocol.step (w.nodes j) ev).1.currentTerm
+      ∧ k = LogStore.lastIndex (fullStep w j ev)
+      ∧ LogStore.get (fullStep w j ev) k = some e := by
+  have hsr : ev.isSnapRecv = false := by
+    cases ev with
+    | recv src m =>
+        cases m with
+        | installSnapshot _ _ _ _ _ => exact absurd h (by simp [createdOf])
+        | _ => rfl
+    | _ => rfl
+  rw [fullStep_node w j ev hsr] at h ⊢
+  exact createdOf_get h
 /-- Every created entry's creator is on record as having led its term. -/
 def CreatedLed (w : World σ κ) : Prop :=
   ∀ i k e, (i, k, e) ∈ w.created → (i, e.term) ∈ w.led

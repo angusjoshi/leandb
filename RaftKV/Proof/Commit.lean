@@ -97,6 +97,7 @@ theorem mem_ackOf_cases {i p T m : Nat} {lg fl : σ} {s : NodeState σ κ} {acts
         | requestVote a b c d => simp at heq
         | requestVoteResp a b => simp at heq
         | appendEntries a b c d e f => simp at heq
+        | installSnapshot a b c d e => simp at heq
         | appendEntriesResp t2 ok mi =>
             cases ok with
             | false => simp at heq
@@ -327,6 +328,14 @@ theorem step_matchIndex {s : NodeState σ κ} {ev : Event}
   cases ev with
   | recv src m =>
       cases m with
+      | installSnapshot term lid li a ps =>
+          left
+          by_cases hlt : term < s.currentTerm
+          · rw [Protocol.step, handleInstallSnapshot_stale s term lid li a ps hlt] at hl ⊢
+            exact ⟨rfl, rfl, hl⟩
+          · exfalso
+            rw [Protocol.step, handleInstallSnapshot_follower s term lid li a ps hlt] at hl
+            exact Role.noConfusion hl
       | requestVote term candId li lt =>
           left
           rw [Protocol.step, handleRequestVote] at hl ⊢
@@ -549,6 +558,14 @@ theorem step_commit_quorum {s : NodeState σ κ} {ev : Event}
   cases ev with
   | recv src m =>
       cases m with
+      | installSnapshot term lid li a ps =>
+          exfalso
+          by_cases hlt : term < s.currentTerm
+          · rw [Protocol.step, handleInstallSnapshot_stale s term lid li a ps hlt] at hadv
+            exact Nat.lt_irrefl _ hadv
+          · rw [Protocol.step,
+              handleInstallSnapshot_follower s term lid li a ps hlt] at hlead
+            exact Role.noConfusion hlead
       | requestVote term candId li lt =>
           exfalso
           rw [Protocol.step, handleRequestVote] at hadv
@@ -620,6 +637,14 @@ theorem commit_term_of_step {s : NodeState σ κ} {ev : Event}
   cases ev with
   | recv src m =>
       cases m with
+      | installSnapshot term lid li a ps =>
+          exfalso
+          by_cases hlt : term < s.currentTerm
+          · rw [Protocol.step, handleInstallSnapshot_stale s term lid li a ps hlt] at hadv
+            exact Nat.lt_irrefl _ hadv
+          · rw [Protocol.step,
+              handleInstallSnapshot_follower s term lid li a ps hlt] at hlead
+            exact Role.noConfusion hlead
       | requestVote term candId li lt =>
           exfalso
           rw [Protocol.step, handleRequestVote] at hadv
@@ -821,11 +846,23 @@ path is `handleAppendEntries`. Everything else leaves the index alone.
 theorem step_commit_advance {s : NodeState σ κ} {ev : Event}
     (hadv : s.commitIndex < (Protocol.step s ev).1.commitIndex) :
     (Protocol.step s ev).1.role = Role.leader
-      ∨ ∃ (src term l pi pt : Nat) (es : List Entry) (lc : Nat),
-          ev = Event.recv src (Msg.appendEntries term l pi pt es lc) := by
+      ∨ (∃ (src term l pi pt : Nat) (es : List Entry) (lc : Nat),
+          ev = Event.recv src (Msg.appendEntries term l pi pt es lc))
+      ∨ (∃ (src term lid lastIdx : Nat) (anchor : Entry) (pairs : List (String × String)),
+          ev = Event.recv src (Msg.installSnapshot term lid lastIdx anchor pairs)
+            ∧ Protocol.snapInstalls s term lastIdx anchor = true) := by
   cases ev with
   | recv src m =>
       cases m with
+      | installSnapshot term lid lastIdx anchor pairs =>
+          by_cases hi : Protocol.snapInstalls s term lastIdx anchor = true
+          · exact Or.inr (Or.inr ⟨src, term, lid, lastIdx, anchor, pairs, rfl, hi⟩)
+          · exfalso
+            have hi' : Protocol.snapInstalls s term lastIdx anchor = false := by simpa using hi
+            obtain ⟨_, _, _, hci⟩ :=
+              handleInstallSnapshot_noop s term lid lastIdx anchor pairs hi'
+            rw [Protocol.step, hci] at hadv
+            exact Nat.lt_irrefl _ hadv
       | requestVote term candId li lt =>
           exfalso
           rw [Protocol.step, handleRequestVote] at hadv
@@ -846,7 +883,8 @@ theorem step_commit_advance {s : NodeState σ κ} {ev : Event}
             · exact Nat.lt_irrefl _ hadv
             · dsimp only at hadv; revert hadv
               split <;> (split <;> (intro hq; first | exact Nat.lt_irrefl _ hq | simp at hq))
-      | appendEntries term l pi pt es lc => exact Or.inr ⟨src, term, l, pi, pt, es, lc, rfl⟩
+      | appendEntries term l pi pt es lc =>
+          exact Or.inr (Or.inl ⟨src, term, l, pi, pt, es, lc, rfl⟩)
       | appendEntriesResp term ok mi =>
           left
           rw [Protocol.step, handleAppendEntriesResp] at hadv ⊢

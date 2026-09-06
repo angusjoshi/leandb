@@ -165,11 +165,12 @@ theorem step_full_of_leader (s : NodeState σ κ) (fl : σ) (ev : Event)
 /-- The guards the installer checks, unpacked. -/
 theorem snapInstalls_facts {s : NodeState σ κ} {term lastIdx : Nat} {anchor : Entry}
     (h : Protocol.snapInstalls s term lastIdx anchor = true) :
-    ¬ (term < s.currentTerm) ∧ 2 ≤ lastIdx ∧ s.commitIndex < lastIdx := by
+    ¬ (term < s.currentTerm) ∧ 2 ≤ lastIdx ∧ s.commitIndex < lastIdx
+      ∧ LogStore.lastIndex s.log ≤ lastIdx := by
   rw [Protocol.snapInstalls] at h
   simp only [Bool.and_eq_true, Bool.not_eq_true', decide_eq_true_eq,
     decide_eq_false_iff_not] at h
-  exact ⟨by simpa using h.1.1.1, h.1.2, h.2⟩
+  exact ⟨by simpa using h.1.1.1.1, h.1.1.2, h.1.2, h.2⟩
 
 /--
 **How a step can change the logical log, in the world.**
@@ -248,6 +249,12 @@ theorem world_full_of_leader (w : World σ κ) (i : Nat) (ev : Event)
 
 /-! ## The bridge invariant -/
 
+theorem act_leaderLogsF (w : World σ κ) (j : Nat) (ev : Event) :
+    (w.act j ev).leaderLogs
+      = w.leaderLogs
+        ++ leaderLogOf j (Protocol.step (w.nodes j) ev).1 (fullStep w j ev) :=
+  rfl
+
 theorem act_snapLogs (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).snapLogs
       = w.snapLogs
@@ -301,6 +308,12 @@ structure FullBridge (w : World σ κ) : Prop where
   -/
   slFirst : ∀ i T n ps lg, (i, T, n, ps, lg) ∈ w.snapLogs → LogStore.firstIndex lg = 1
   /--
+  A snapshot record is a leader-log record: both are written at the same step,
+  under the same guard, with the same log. So everything already proved about a
+  leader's recorded logs applies to what a snapshot ships.
+  -/
+  slLeader : ∀ i T n ps (lg : σ), (i, T, n, ps, lg) ∈ w.snapLogs → (i, T, lg) ∈ w.leaderLogs
+  /--
   **Snapshot provenance.** Every snapshot on the wire has a matching record, with
   the anchor really being the sender's entry at that index.
 
@@ -328,6 +341,7 @@ theorem fullBridge_init (members : List Nat) :
   snapApplied := fun _ => Nat.le_refl _
   applied := fun _ => Nat.le_refl _
   slFirst := by intro i T n ps lg h; simp [World.init] at h
+  slLeader := by intro i T n ps lg h; simp [World.init] at h
   snapWire := by intro src dst term lid lastIdx anchor pairs h; simp [World.init] at h
 
 /--
@@ -519,7 +533,7 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
                 exact absurd hsr' (by simp [Event.isSnapRecv])
             | installSnapshot term lid lastIdx anchor pairs =>
                 by_cases hi : Protocol.snapInstalls (w.nodes j) term lastIdx anchor = true
-                · obtain ⟨hlt2, hlow, hcom⟩ := snapInstalls_facts hi
+                · obtain ⟨hlt2, hlow, hcom, hcov⟩ := snapInstalls_facts hi
                   obtain ⟨lg, _, hget, hlg1, hfl⟩ :=
                     snapInstall_facts h (hdel src _ rfl) hi
                   have hlgreach : lastIdx ≤ LogStore.lastIndex lg :=
@@ -573,7 +587,7 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
                     h.snapTwo j, h.snapApplied j⟩
     refine ⟨fun i => ?_, fun i => ?_, fun i k hk => ?_, fun i => ?_, fun i => ?_,
       fun i => ?_, fun i => ?_, fun i => ?_, fun a b c d e hm => ?_,
-      fun a b c d e f g hm => ?_⟩
+      fun a b c d e hm => ?_, fun a b c d e f g hm => ?_⟩
     · by_cases hij : i = j
       · subst hij; rw [act_full_self]; exact main.1
       · rw [act_full_ne _ _ _ hij]; exact h.first i
@@ -613,6 +627,26 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
             have hq2 := congrArg (fun r => r.2.2.2.2) hq
             simpa using hq2
           rw [this]; exact main.1
+        · simp at hm'
+    · -- the two records are written together, under the same guard
+      rw [act_snapLogs] at hm
+      rw [act_leaderLogsF]
+      rcases List.mem_append.mp hm with hm' | hm'
+      · exact List.mem_append_left _ (h.slLeader a b c d e hm')
+      · refine List.mem_append_right _ ?_
+        rw [snapLogOf] at hm'
+        rw [leaderLogOf]
+        split at hm'
+        · rename_i hlead
+          rw [if_pos hlead]
+          rcases List.mem_singleton.mp hm' with hq
+          refine List.mem_singleton.mpr ?_
+          have h1 := congrArg (fun r => r.1) hq
+          have h2 := congrArg (fun r => r.2.1) hq
+          have h5 := congrArg (fun r => r.2.2.2.2) hq
+          simp only at h1 h2 h5
+          subst h1
+          rw [h2, h5]
         · simp at hm'
     · -- **Provenance.** A snapshot newly on the wire came from a leader, which
       -- recorded at that very step; and the anchor it carries is that node's own
@@ -667,7 +701,7 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
       -- the durable trio survives, and the state machine restarts from the snapshot
       refine ⟨fun i => ?_, fun i => ?_, fun i k' hk' => ?_, fun i => ?_, fun i => ?_,
         fun i => ?_, fun i => ?_, fun i => ?_, fun a b c d e hm => ?_,
-        fun a b c d e f g hm => ?_⟩
+        fun a b c d e hm => ?_, fun a b c d e f g hm => ?_⟩
       · rw [crash_full]; exact h.first i
       · rw [crash_full]
         by_cases hij : i = k
@@ -697,6 +731,7 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
           exact Nat.le_refl _
         · rw [crash_nodes_ne _ _ hij]; exact h.applied i
       · rw [crash_snapLogs] at hm; exact h.slFirst a b c d e hm
+      · rw [crash_snapLogs] at hm; rw [crash_leaderLogs]; exact h.slLeader a b c d e hm
       · rw [crash_sent] at hm; exact h.snapWire a b c d e f g hm
   | compact k hk =>
       -- **The compaction case.** The logical log does not move at all, so the
@@ -746,7 +781,7 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
         · exact ⟨h.snapFirst i, h.snapTwo i, h.snapApplied i, h.last i, h.agree i, h.window i⟩
       refine ⟨fun i => ?_, fun i => ?_, fun i q hq => ?_, fun i => ?_, fun i => ?_,
         fun i => ?_, fun i => ?_, fun i => ?_, fun a b c d e hm => ?_,
-        fun a b c d e f g hm => ?_⟩
+        fun a b c d e hm => ?_, fun a b c d e f g hm => ?_⟩
       · rw [compactAt_full]; exact h.first i
       · rw [compactAt_full]
         by_cases hij : i = k
@@ -775,6 +810,8 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
           exact h.applied i
         · rw [compactAt_nodes_ne _ _ hij]; exact h.applied i
       · rw [compactAt_snapLogs] at hm; exact h.slFirst a b c d e hm
+      · rw [compactAt_snapLogs] at hm; rw [compactAt_leaderLogs]
+        exact h.slLeader a b c d e hm
       · rw [compactAt_sent] at hm; exact h.snapWire a b c d e f g hm
 
 /-- **The bridge holds in every reachable world.** -/
