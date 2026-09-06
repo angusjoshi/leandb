@@ -221,6 +221,18 @@ theorem vote_act {members : List Nat} {w w' : World σ κ}
       · intro v c₁ c₂ t h₁ h₂
         rw [crash_sent] at h₁ h₂
         exact hu v c₁ c₂ t h₁ h₂
+  | compact i _ =>
+      -- compaction touches only the log; terms, votes and `sent` are untouched
+      refine ⟨?_, ?_⟩
+      · intro v c t hp
+        rw [compactAt_sent] at hp
+        obtain ⟨hle, himp⟩ := hv v c t hp
+        by_cases hvi : v = i
+        · subst hvi; rw [compactAt_nodes_self]; simpa using And.intro hle himp
+        · rw [compactAt_nodes_ne _ _ hvi]; exact ⟨hle, himp⟩
+      · intro v c₁ c₂ t h₁ h₂
+        rw [compactAt_sent] at h₁ h₂
+        exact hu v c₁ c₂ t h₁ h₂
 
 /-- The invariant is preserved by every step. -/
 theorem inv_step {members : List Nat} {w w' : World σ κ}
@@ -242,6 +254,13 @@ theorem inv_step {members : List Nat} {w w' : World σ κ}
         · subst hji; rw [crash_nodes_self, restart_cfg]; exact h.cfg j
         · rw [crash_nodes_ne _ _ hji]; exact h.cfg j
       · intro a b t c li lt hp; rw [crash_sent] at hp; exact h.rvwf a b t c li lt hp
+  | compact i hi =>
+      refine ⟨?_, ?_, hvu.1, hvu.2⟩
+      · intro j
+        by_cases hji : j = i
+        · subst hji; rw [compactAt_nodes_self, compactTo_cfg]; exact h.cfg j
+        · rw [compactAt_nodes_ne _ _ hji]; exact h.cfg j
+      · intro a b t c li lt hp; rw [compactAt_sent] at hp; exact h.rvwf a b t c li lt hp
 
 /-- **The invariant holds in every reachable world.** -/
 theorem inv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :

@@ -206,5 +206,27 @@ theorem gInv_step {members : List Nat} {w w' : World σ κ}
           rw [restart_currentTerm]
           exact h.selfRec v c hvf
         · rw [crash_nodes_ne _ _ hvi] at hvf ⊢; exact h.selfRec v c hvf
+  | compact i _ =>
+      -- compaction writes no ghost record and touches no field these mention
+      refine ⟨?_, ?_, ?_, ?_⟩
+      · intro v c t hp
+        rw [compactAt_votes] at hp
+        obtain ⟨hle, himp⟩ := h.vote v c t hp
+        by_cases hvi : v = i
+        · subst hvi; rw [compactAt_nodes_self]; simpa using And.intro hle himp
+        · rw [compactAt_nodes_ne _ _ hvi]; exact ⟨hle, himp⟩
+      · intro v c₁ c₂ t h₁ h₂
+        rw [compactAt_votes] at h₁ h₂; exact h.unique v c₁ c₂ t h₁ h₂
+      · intro v c t hp
+        rw [compactAt_sent] at hp; rw [compactAt_votes]; exact h.recorded v c t hp
+      · intro v c hvf
+        rw [compactAt_votes]
+        by_cases hvi : v = i
+        · subst hvi
+          rw [compactAt_nodes_self] at hvf ⊢
+          rw [compactTo_votedFor] at hvf
+          rw [compactTo_currentTerm]
+          exact h.selfRec v c hvf
+        · rw [compactAt_nodes_ne _ _ hvi] at hvf ⊢; exact h.selfRec v c hvf
 
 end RaftKV.Proof

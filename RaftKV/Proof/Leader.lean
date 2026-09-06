@@ -234,6 +234,29 @@ theorem votes_act {members : List Nat} {w w' : World σ κ}
         by_cases heq : v = i
         · subst heq; rw [crash_nodes_self] at hv; exact absurd hv (by simp)
         · rw [crash_nodes_ne _ _ heq] at hv ⊢; exact hqi v hv
+  | compact i _ =>
+      -- compaction changes no field either invariant mentions
+      have hnode : ∀ v, ((w.compactAt i).nodes v).role = (w.nodes v).role
+          ∧ ((w.compactAt i).nodes v).votedFor = (w.nodes v).votedFor
+          ∧ ((w.compactAt i).nodes v).votesGranted = (w.nodes v).votesGranted
+          ∧ ((w.compactAt i).nodes v).currentTerm = (w.nodes v).currentTerm
+          ∧ ((w.compactAt i).nodes v).cfg = (w.nodes v).cfg := by
+        intro v
+        by_cases heq : v = i
+        · subst heq; rw [compactAt_nodes_self]; exact ⟨by simp, by simp, by simp, by simp, by simp⟩
+        · rw [compactAt_nodes_ne _ _ heq]
+          exact ⟨rfl, rfl, rfl, rfl, rfl⟩
+      refine ⟨fun v hv => ?_, fun v hv => ?_⟩
+      · obtain ⟨e1, e2, e3, e4, _⟩ := hnode v
+        rw [e1] at hv
+        obtain ⟨h1, h2, h3, h4⟩ := hvi v hv
+        refine ⟨by rw [e2]; exact h1, by rw [e3]; exact h2, ?_, ?_⟩
+        · rw [e3]; exact h3
+        · rw [e3, e4, compactAt_sent]; exact h4
+      · obtain ⟨e1, _, e3, _, _⟩ := hnode v
+        rw [e1] at hv
+        rw [e3]
+        exact hqi v hv
 
 /-! ## Election Safety, unconditionally -/
 
@@ -265,6 +288,7 @@ theorem fullInv_step {members : List Nat} {w w' : World σ κ}
   | heartbeat i hiM => exact sentFrom_act h.sent hiM _
   | client i rid cmd hiM => exact sentFrom_act h.sent hiM _
   | crash i _ => intro p hp; rw [crash_sent] at hp; exact h.sent p hp
+  | compact i _ => intro p hp; rw [compactAt_sent] at hp; exact h.sent p hp
 
 /-- The full invariant holds in every reachable world. -/
 theorem fullInv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :

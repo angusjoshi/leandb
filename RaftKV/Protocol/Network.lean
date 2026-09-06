@@ -293,6 +293,17 @@ def World.crash (w : World σ κ) (i : Nat) : World σ κ :=
   { w with nodes := fun j => if j = i then Protocol.restart (w.nodes i) else w.nodes j,
            clock := w.clock + 1 }
 
+/--
+Node `i` compacts its log.
+
+Nothing observable changes: no message is sent, no ghost record is written, and
+the logical log — which every safety invariant is stated over — is untouched.
+What changes is only how much of it the node still holds.
+-/
+def World.compactAt (w : World σ κ) (i : Nat) : World σ κ :=
+  { w with nodes := fun j => if j = i then Protocol.compactTo (w.nodes i) else w.nodes j,
+           clock := w.clock + 1 }
+
 /-- The starting state: every node freshly initialised, nothing sent or voted. -/
 def World.init (members : List Nat) : World σ κ :=
   { nodes := fun i => Protocol.initState { me := i, members := members },
@@ -324,6 +335,9 @@ inductive Step (members : List Nat) : World σ κ → World σ κ → Prop where
   /-- Any node may crash and restart, losing everything but its durable state. -/
   | crash (w : World σ κ) (i : Nat) :
       i ∈ members → Step members w (w.crash i)
+  /-- Any node may compact its log, discarding what its snapshot now covers. -/
+  | compact (w : World σ κ) (i : Nat) :
+      i ∈ members → Step members w (w.compactAt i)
 
 /-! ### Reading a crashed world -/
 
@@ -354,6 +368,76 @@ inductive Step (members : List Nat) : World σ κ → World σ κ → Prop where
     (w.crash i).commitTime = w.commitTime := rfl
 @[simp] theorem crash_clock (w : World σ κ) (i : Nat) : (w.crash i).clock = w.clock + 1 := rfl
 
+/-! ### Compaction moves nothing but one node's log -/
+
+@[simp] theorem compactAt_nodes_self (w : World σ κ) (i : Nat) :
+    (w.compactAt i).nodes i = Protocol.compactTo (w.nodes i) := by
+  rw [World.compactAt]; dsimp only; rw [if_pos rfl]
+@[simp] theorem compactAt_nodes_ne (w : World σ κ) (i : Nat) {j : Nat} (h : j ≠ i) :
+    (w.compactAt i).nodes j = w.nodes j := by
+  rw [World.compactAt]; dsimp only; rw [if_neg h]
+@[simp] theorem compactAt_full (w : World σ κ) (i : Nat) : (w.compactAt i).full = w.full := rfl
+@[simp] theorem compactAt_sent (w : World σ κ) (i : Nat) : (w.compactAt i).sent = w.sent := rfl
+@[simp] theorem compactAt_votes (w : World σ κ) (i : Nat) : (w.compactAt i).votes = w.votes := rfl
+@[simp] theorem compactAt_led (w : World σ κ) (i : Nat) : (w.compactAt i).led = w.led := rfl
+@[simp] theorem compactAt_created (w : World σ κ) (i : Nat) :
+    (w.compactAt i).created = w.created := rfl
+@[simp] theorem compactAt_chain (w : World σ κ) (i : Nat) : (w.compactAt i).chain = w.chain := rfl
+@[simp] theorem compactAt_elected (w : World σ κ) (i : Nat) :
+    (w.compactAt i).elected = w.elected := rfl
+@[simp] theorem compactAt_commits (w : World σ κ) (i : Nat) :
+    (w.compactAt i).commits = w.commits := rfl
+@[simp] theorem compactAt_acks (w : World σ κ) (i : Nat) : (w.compactAt i).acks = w.acks := rfl
+@[simp] theorem compactAt_voteLogs (w : World σ κ) (i : Nat) :
+    (w.compactAt i).voteLogs = w.voteLogs := rfl
+@[simp] theorem compactAt_leaderLogs (w : World σ κ) (i : Nat) :
+    (w.compactAt i).leaderLogs = w.leaderLogs := rfl
+@[simp] theorem compactAt_hist (w : World σ κ) (i : Nat) : (w.compactAt i).hist = w.hist := rfl
+@[simp] theorem compactAt_createTime (w : World σ κ) (i : Nat) :
+    (w.compactAt i).createTime = w.createTime := rfl
+@[simp] theorem compactAt_commitTime (w : World σ κ) (i : Nat) :
+    (w.compactAt i).commitTime = w.commitTime := rfl
+@[simp] theorem compactAt_clock (w : World σ κ) (i : Nat) :
+    (w.compactAt i).clock = w.clock + 1 := rfl
+
+/-- Compaction leaves every field but the log and the snapshot alone. -/
+@[simp] theorem compactTo_currentTerm (s : NodeState σ κ) :
+    (Protocol.compactTo s).currentTerm = s.currentTerm := by
+  rw [Protocol.compactTo]; split <;> rfl
+@[simp] theorem compactTo_votedFor (s : NodeState σ κ) :
+    (Protocol.compactTo s).votedFor = s.votedFor := by
+  rw [Protocol.compactTo]; split <;> rfl
+@[simp] theorem compactTo_role (s : NodeState σ κ) :
+    (Protocol.compactTo s).role = s.role := by
+  rw [Protocol.compactTo]; split <;> rfl
+@[simp] theorem compactTo_commitIndex (s : NodeState σ κ) :
+    (Protocol.compactTo s).commitIndex = s.commitIndex := by
+  rw [Protocol.compactTo]; split <;> rfl
+@[simp] theorem compactTo_lastApplied (s : NodeState σ κ) :
+    (Protocol.compactTo s).lastApplied = s.lastApplied := by
+  rw [Protocol.compactTo]; split <;> rfl
+@[simp] theorem compactTo_kv (s : NodeState σ κ) :
+    (Protocol.compactTo s).kv = s.kv := by
+  rw [Protocol.compactTo]; split <;> rfl
+@[simp] theorem compactTo_cfg (s : NodeState σ κ) :
+    (Protocol.compactTo s).cfg = s.cfg := by
+  rw [Protocol.compactTo]; split <;> rfl
+@[simp] theorem compactTo_votesGranted (s : NodeState σ κ) :
+    (Protocol.compactTo s).votesGranted = s.votesGranted := by
+  rw [Protocol.compactTo]; split <;> rfl
+@[simp] theorem compactTo_nextIndex (s : NodeState σ κ) :
+    (Protocol.compactTo s).nextIndex = s.nextIndex := by
+  rw [Protocol.compactTo]; split <;> rfl
+@[simp] theorem compactTo_matchIndex (s : NodeState σ κ) :
+    (Protocol.compactTo s).matchIndex = s.matchIndex := by
+  rw [Protocol.compactTo]; split <;> rfl
+@[simp] theorem compactTo_pending (s : NodeState σ κ) :
+    (Protocol.compactTo s).pending = s.pending := by
+  rw [Protocol.compactTo]; split <;> rfl
+@[simp] theorem compactTo_leaderHint (s : NodeState σ κ) :
+    (Protocol.compactTo s).leaderHint = s.leaderHint := by
+  rw [Protocol.compactTo]; split <;> rfl
+
 /-- A restart keeps the durable trio and forgets the rest. -/
 @[simp] theorem restart_currentTerm (s : NodeState σ κ) :
     (Protocol.restart s).currentTerm = s.currentTerm := rfl
@@ -376,6 +460,13 @@ inductive Step (members : List Nat) : World σ κ → World σ κ → Prop where
 @[simp] theorem restart_pending (s : NodeState σ κ) : (Protocol.restart s).pending = [] := rfl
 @[simp] theorem restart_kv (s : NodeState σ κ) :
     (Protocol.restart s).kv = (KVStore.ofPairs (KVStore.toPairs s.snapKV) : κ) := rfl
+
+/-- Nor across a compaction, which touches only the log. -/
+theorem compact_term_mono (w : World σ κ) (i j : Nat) :
+    (w.nodes j).currentTerm ≤ ((w.compactAt i).nodes j).currentTerm := by
+  by_cases h : j = i
+  · subst h; rw [compactAt_nodes_self, compactTo_currentTerm]; exact Nat.le_refl _
+  · rw [compactAt_nodes_ne _ _ h]; exact Nat.le_refl _
 
 /-- A node's term never moves backwards across a crash either. -/
 theorem crash_term_mono (w : World σ κ) (i j : Nat) :

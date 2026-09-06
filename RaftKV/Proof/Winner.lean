@@ -47,6 +47,9 @@ theorem wonTerm_step {members : List Nat} {w w' : World σ κ} {i t : Nat}
   | crash k _ =>
       obtain ⟨V, h1, h2, h3, h4⟩ := h
       exact ⟨V, h1, h2, h3, fun v hv => by rw [crash_votes]; exact h4 v hv⟩
+  | compact k _ =>
+      obtain ⟨V, h1, h2, h3, h4⟩ := h
+      exact ⟨V, h1, h2, h3, fun v hv => by rw [compactAt_votes]; exact h4 v hv⟩
 
 /-- A node that currently leads term `t` has won term `t`. -/
 theorem wonTerm_of_leader {members : List Nat} {w : World σ κ}

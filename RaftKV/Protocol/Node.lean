@@ -90,6 +90,25 @@ def recoverNode (cfg : Config) (p : Persistent σ) : NodeState σ κ :=
 
 def restart (s : NodeState σ κ) : NodeState σ κ := recoverNode s.cfg (persistOf s)
 
+/--
+**Log compaction.** Discard everything the state machine has already absorbed,
+recording the state machine itself in its place.
+
+The cut is at `lastApplied + 1`: entries at or below `lastApplied` go, and the
+entry just above stays as the anchor the consistency check needs. The snapshot
+that replaces them is exactly the current state machine, at exactly
+`lastApplied` — which is what makes a later restart sound, since the entries it
+would otherwise have replayed are the ones now summarised.
+
+A no-op unless there is something to discard and something to keep.
+-/
+def compactTo (s : NodeState σ κ) : NodeState σ κ :=
+  if LogStore.firstIndex s.log ≤ s.lastApplied + 1
+      ∧ s.lastApplied + 1 ≤ LogStore.lastIndex s.log then
+    { s with log := LogStore.compact s.log (s.lastApplied + 1),
+             snapIndex := s.lastApplied, snapKV := s.kv }
+  else s
+
 /-- **Restarting is exactly recovering from the durable projection.** -/
 theorem restart_eq_recoverNode (s : NodeState σ κ) :
     restart s = recoverNode s.cfg (persistOf s) := rfl

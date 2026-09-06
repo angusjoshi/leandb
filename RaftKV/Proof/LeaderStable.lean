@@ -183,7 +183,7 @@ theorem leader_stable {members : List Nat} {w w' : World σ κ} [LawfulLogStore 
     ((w'.nodes i).role = Role.leader
         ∧ (w'.nodes i).currentTerm = (w.nodes i).currentTerm)
       ∨ (w.nodes i).currentTerm < (w'.nodes i).currentTerm
-      ∨ ((w'.nodes i).log = (w.nodes i).log
+      ∨ (w'.full i = w.full i
           ∧ (w'.nodes i).currentTerm = (w.nodes i).currentTerm) := by
   have hp := pInv_reachable hr
   -- A same-term `AppendEntries` addressed to a term-`t` leader cannot exist.
@@ -227,71 +227,14 @@ theorem leader_stable {members : List Nat} {w w' : World σ κ} [LawfulLogStore 
       by_cases hij : i = k
       · subst hij
         rw [crash_nodes_self]
-        exact Or.inr (Or.inr ⟨restart_log _, restart_currentTerm _⟩)
+        exact Or.inr (Or.inr ⟨rfl, restart_currentTerm _⟩)
       · rw [crash_nodes_ne _ _ hij]; exact Or.inl ⟨hl, rfl⟩
-
-/--
-**A leader's log grows monotonically for as long as it leads.**
-
-Combining `leader_stable` with `step_log_of_leader`: while a node holds
-leadership across a step, its log is either untouched or extended by exactly one
-entry — never truncated, never rewritten.
--/
-theorem leader_log_monotone {members : List Nat} {w w' : World σ κ}
-    [LawfulLogStore σ]
-    (hs : Step members w w') {i : Nat}
-    (hl : (w.nodes i).role = Role.leader)
-    (hl' : (w'.nodes i).role = Role.leader) :
-    (w'.nodes i).log = (w.nodes i).log
-      ∨ ∃ e, (w'.nodes i).log = LogStore.append (w.nodes i).log e := by
-  cases hs with
-  | deliver s d m hd hmem =>
-      by_cases hij : i = d
-      · subst hij
-        rw [act_nodes_self] at hl' ⊢
-        exact step_log_of_leader _ _ hl hl'
-      · rw [act_nodes_ne _ _ _ hij]; exact Or.inl rfl
-  | electionTimeout k _ =>
+  | compact k _ =>
+      -- compaction keeps the node exactly where it was, logically
       by_cases hij : i = k
       · subst hij
-        rw [act_nodes_self] at hl' ⊢
-        exact step_log_of_leader _ _ hl hl'
-      · rw [act_nodes_ne _ _ _ hij]; exact Or.inl rfl
-  | heartbeat k _ =>
-      by_cases hij : i = k
-      · subst hij
-        rw [act_nodes_self] at hl' ⊢
-        exact step_log_of_leader _ _ hl hl'
-      · rw [act_nodes_ne _ _ _ hij]; exact Or.inl rfl
-  | client k rid cmd _ =>
-      by_cases hij : i = k
-      · subst hij
-        rw [act_nodes_self] at hl' ⊢
-        exact step_log_of_leader _ _ hl hl'
-      · rw [act_nodes_ne _ _ _ hij]; exact Or.inl rfl
-  | crash k _ =>
-      by_cases hij : i = k
-      · subst hij; rw [crash_nodes_self] at hl'; exact absurd hl' (by simp)
-      · rw [crash_nodes_ne _ _ hij]; exact Or.inl rfl
-
-
-
-/--
-**A leader's log only grows for as long as its term stands.**
-
-This is what the callers of `leader_stable` are really after, and unlike
-`leader_stable` it is undisturbed by a crash: a restart forgets the leadership
-but the log is durable, so it cannot shrink.
--/
-theorem log_stable_in_term {members : List Nat} {w w' : World σ κ} [LawfulLogStore σ]
-    (hnd : members.Nodup) (hr : Reachable members w) (hs : Step members w w') {i : Nat}
-    (hl : (w.nodes i).role = Role.leader)
-    (hterm : (w'.nodes i).currentTerm = (w.nodes i).currentTerm) :
-    (w'.nodes i).log = (w.nodes i).log
-      ∨ ∃ e, (w'.nodes i).log = LogStore.append (w.nodes i).log e := by
-  rcases leader_stable hnd hr hs hl with ⟨h1, _⟩ | h2 | ⟨h3, _⟩
-  · exact leader_log_monotone hs hl h1
-  · omega
-  · exact Or.inl h3
+        rw [compactAt_nodes_self]
+        exact Or.inl ⟨by simpa using hl, by simp⟩
+      · rw [compactAt_nodes_ne _ _ hij]; exact Or.inl ⟨hl, rfl⟩
 
 end RaftKV.Proof

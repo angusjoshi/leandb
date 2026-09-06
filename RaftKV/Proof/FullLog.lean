@@ -347,6 +347,70 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
           rw [crash_nodes_self, restart_log, restart_snapIndex, restart_lastApplied]
           exact ⟨(h.snap i).1, Nat.le_refl _⟩
         · rw [crash_nodes_ne _ _ hij]; exact h.snap i
+  | compact k hk =>
+      -- **The compaction case.** The logical log does not move at all, so the
+      -- only thing to check is that the node still holds everything above the
+      -- window it just moved forward.
+      have hmain : ∀ i, i = k →
+          LogStore.firstIndex ((Protocol.compactTo (w.nodes i)).log)
+              = (Protocol.compactTo (w.nodes i)).snapIndex + 1
+            ∧ (Protocol.compactTo (w.nodes i)).snapIndex
+              ≤ (Protocol.compactTo (w.nodes i)).lastApplied
+            ∧ LogStore.lastIndex (w.full i)
+              = LogStore.lastIndex ((Protocol.compactTo (w.nodes i)).log)
+            ∧ (∀ q, LogStore.firstIndex ((Protocol.compactTo (w.nodes i)).log) ≤ q →
+                LogStore.get ((Protocol.compactTo (w.nodes i)).log) q
+                  = LogStore.get (w.full i) q)
+            ∧ (LogStore.firstIndex ((Protocol.compactTo (w.nodes i)).log) = 1
+              ∨ LogStore.firstIndex ((Protocol.compactTo (w.nodes i)).log)
+                ≤ LogStore.lastIndex ((Protocol.compactTo (w.nodes i)).log)) := by
+        intro i _
+        rw [Protocol.compactTo]
+        split
+        · rename_i hg
+          obtain ⟨hg1, hg2⟩ := hg
+          have hfi := LogStore.firstIndex_compact (w.nodes i).log ((w.nodes i).lastApplied + 1)
+            hg1 hg2
+          have hli := LogStore.lastIndex_compact (w.nodes i).log ((w.nodes i).lastApplied + 1)
+            hg1 hg2
+          refine ⟨by simpa using hfi, by simp, ?_, ?_, ?_⟩
+          · show LogStore.lastIndex (w.full i)
+              = LogStore.lastIndex (LogStore.compact (w.nodes i).log ((w.nodes i).lastApplied + 1))
+            rw [hli]; exact h.last i
+          · intro q hq
+            show LogStore.get (LogStore.compact (w.nodes i).log ((w.nodes i).lastApplied + 1)) q
+              = LogStore.get (w.full i) q
+            have hq' : (w.nodes i).lastApplied + 1 ≤ q := by
+              show _ ≤ q
+              have : LogStore.firstIndex
+                  (LogStore.compact (w.nodes i).log ((w.nodes i).lastApplied + 1)) ≤ q := hq
+              rw [hfi] at this; exact this
+            rw [LogStore.get_compact_of_le _ _ _ hg1 hg2 hq']
+            exact h.agree i q (by omega)
+          · right
+            show LogStore.firstIndex (LogStore.compact _ _) ≤ LogStore.lastIndex (LogStore.compact _ _)
+            rw [hfi, hli]; omega
+        · exact ⟨(h.snap i).1, (h.snap i).2, h.last i, h.agree i, h.window i⟩
+      refine ⟨fun i => ?_, fun i => ?_, fun i q hq => ?_, fun i => ?_, fun i => ?_⟩
+      · rw [compactAt_full]; exact h.first i
+      · rw [compactAt_full]
+        by_cases hij : i = k
+        · subst hij; rw [compactAt_nodes_self]; exact (hmain i rfl).2.2.1
+        · rw [compactAt_nodes_ne _ _ hij]; exact h.last i
+      · rw [compactAt_full]
+        by_cases hij : i = k
+        · subst hij
+          rw [compactAt_nodes_self] at hq ⊢
+          exact (hmain i rfl).2.2.2.1 q hq
+        · rw [compactAt_nodes_ne _ _ hij] at hq ⊢; exact h.agree i q hq
+      · by_cases hij : i = k
+        · subst hij; rw [compactAt_nodes_self]; exact (hmain i rfl).2.2.2.2
+        · rw [compactAt_nodes_ne _ _ hij]; exact h.window i
+      · by_cases hij : i = k
+        · subst hij
+          rw [compactAt_nodes_self]
+          exact ⟨(hmain i rfl).1, (hmain i rfl).2.1⟩
+        · rw [compactAt_nodes_ne _ _ hij]; exact h.snap i
 
 /-- **The bridge holds in every reachable world.** -/
 theorem fullBridge_reachable {members : List Nat} {w : World σ κ}
@@ -432,6 +496,7 @@ theorem leader_full_monotone {members : List Nat} {w w' : World σ κ}
   | heartbeat k _ => exact key k _ rfl
   | client k rid cmd _ => exact key k _ rfl
   | crash k _ => exact Or.inl rfl
+  | compact k _ => exact Or.inl rfl
 
 /-- Nothing a node still has to apply has been discarded. -/
 theorem full_applied {members : List Nat} {w : World σ κ} (h : Reachable members w) (i : Nat) :
