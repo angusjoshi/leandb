@@ -80,6 +80,11 @@ theorem msgFromLeaderLog_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      intro src dst t l pi pt es lc hp
+      rw [crash_sent] at hp
+      obtain ⟨lgL, h1, h2, h3, h4⟩ := h src dst t l pi pt es lc hp
+      exact ⟨lgL, by rw [crash_leaderLogs]; exact h1, h2, h3, h4⟩
 
 theorem msgFromLeaderLog_reachable {members : List Nat} {w : World σ κ}
     (h : Reachable members w) : MsgFromLeaderLog w := by
@@ -367,6 +372,11 @@ theorem ackAgrees_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
+  | crash k hk =>
+      intro v T m lgp hm
+      rw [crash_acks] at hm
+      obtain ⟨hlen, L, lgL, h1, h2, h3⟩ := h v T m lgp hm
+      exact ⟨hlen, L, lgL, by rw [crash_leaderLogs]; exact h1, h2, h3⟩
 
 /-- **Acknowledgements mean agreement, in every reachable world.** -/
 theorem ackAgrees_reachable {members : List Nat} {w : World σ κ}
@@ -410,6 +420,11 @@ theorem commitIsLeaderLog_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      intro L T c lg Q hm
+      rw [crash_commits] at hm
+      obtain ⟨h1, h2⟩ := h L T c lg Q hm
+      exact ⟨by rw [crash_leaderLogs]; exact h1, h2⟩
 
 theorem commitIsLeaderLog_reachable {members : List Nat} {w : World σ κ}
     (h : Reachable members w) : CommitIsLeaderLog w := by

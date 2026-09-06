@@ -152,12 +152,8 @@ theorem llInv_step {members : List Nat} {w w' : World σ κ}
           rw [act_nodes_self] at hmono
           have hold : (w.nodes i).currentTerm = t := by omega
           have hpo := h.pre i t lg h' hold
-          have hlead : (w.nodes i).role = Role.leader := hl.leads i t hledr hold
-          have hlead' : ((w.act i ev).nodes i).role = Role.leader := by
-            rcases leader_stable hnd hr hs hlead with ⟨h1, _⟩ | h2
-            · exact h1
-            · exfalso; rw [hold] at h2; rw [act_nodes_self] at h2; omega
-          rcases leader_log_monotone hs hlead hlead' with hlog | ⟨e', hlog⟩
+          rcases led_log_stable hnd hr hs hledr hold (by rw [act_nodes_self]; exact hterm)
+            with hlog | ⟨e', hlog⟩
           · rw [act_nodes_self] at hlog; rw [hlog]; exact hpo
           · rw [act_nodes_self] at hlog; rw [hlog]; exact hpo.append e'
         · rw [act_nodes_ne _ _ _ hij] at hterm ⊢
@@ -205,6 +201,24 @@ theorem llInv_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      -- snapshots and the ledger are ghosts; the log a snapshot prefixes is durable
+      refine ⟨?_, ?_, ?_, ?_⟩
+      · intro i t lg hm; rw [crash_leaderLogs] at hm; rw [crash_led]; exact h.led i t lg hm
+      · intro i t lg hm hterm
+        rw [crash_leaderLogs] at hm
+        by_cases hik : i = k
+        · subst hik
+          rw [crash_nodes_self, restart_log]
+          rw [crash_nodes_self, restart_currentTerm] at hterm
+          exact h.pre i t lg hm hterm
+        · rw [crash_nodes_ne _ _ hik] at hterm ⊢; exact h.pre i t lg hm hterm
+      · intro i t lg₁ lg₂ h₁ h₂
+        rw [crash_leaderLogs] at h₁ h₂; exact h.chain i t lg₁ lg₂ h₁ h₂
+      · intro c k' e hm
+        rw [crash_created] at hm
+        obtain ⟨lg, h1, h2⟩ := h.created c k' e hm
+        exact ⟨lg, by rw [crash_leaderLogs]; exact h1, h2⟩
 
 /-- A node that currently leads has its current log on record. -/
 def LeaderNowRecorded (w : World σ κ) : Prop :=
@@ -233,6 +247,12 @@ theorem leaderNowRecorded_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      intro i hlead
+      rw [crash_leaderLogs]
+      by_cases hik : i = k
+      · subst hik; rw [crash_nodes_self, restart_role] at hlead; exact absurd hlead (by simp)
+      · rw [crash_nodes_ne _ _ hik] at hlead ⊢; exact h i hlead
 
 theorem leaderNowRecorded_reachable {members : List Nat} {w : World σ κ}
     (h : Reachable members w) : LeaderNowRecorded w := by
@@ -267,6 +287,8 @@ theorem leaderLogWF_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      intro i t lg hm; rw [crash_leaderLogs] at hm; exact (h i t lg hm).crashMono
 
 theorem leaderLogWF_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : LeaderLogWF w := by
@@ -325,6 +347,11 @@ theorem leaderLogHasElected_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      intro X U lgX hm
+      rw [crash_leaderLogs] at hm
+      obtain ⟨lgel, h1, h2⟩ := h X U lgX hm
+      exact ⟨lgel, by rw [crash_elected]; exact h1, h2⟩
 
 theorem leaderLogHasElected_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : LeaderLogHasElected w := by

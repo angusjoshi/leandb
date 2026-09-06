@@ -125,6 +125,17 @@ theorem tInv_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
+  | crash k hk =>
+      refine ⟨?_, ?_⟩
+      · intro i k' e hget
+        by_cases hik : i = k
+        · subst hik
+          rw [crash_nodes_self, restart_log] at hget
+          rw [crash_nodes_self, restart_currentTerm]
+          exact h.logs i k' e hget
+        · rw [crash_nodes_ne _ _ hik] at hget ⊢; exact h.logs i k' e hget
+      · intro src dst t l pi pt es lc n e hp hn
+        rw [crash_sent] at hp; exact h.msgs src dst t l pi pt es lc n e hp hn
 
 /-- **Entry terms never exceed their holder's term, in any reachable world.** -/
 theorem tInv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :
@@ -167,6 +178,11 @@ theorem roleTermPos_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      intro i hne
+      by_cases hik : i = k
+      · subst hik; rw [crash_nodes_self, restart_role] at hne; exact absurd rfl hne
+      · rw [crash_nodes_ne _ _ hik] at hne ⊢; exact h i hne
 
 theorem roleTermPos_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :
     RoleTermPos w := by
@@ -203,6 +219,8 @@ theorem createdTermPos_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      intro c k' e hm; rw [crash_created] at hm; exact h c k' e hm
 
 /-- **Every entry ever minted carries a positive term.** -/
 theorem createdTermPos_reachable {members : List Nat} {w : World σ κ}
@@ -266,6 +284,8 @@ theorem chainSorted_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      intro idx e p hm; rw [crash_chain] at hm; exact h idx e p hm
 
 theorem chainSorted_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :
     ChainSorted w := by

@@ -165,6 +165,17 @@ theorem bInv_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
+  | crash k hk =>
+      -- the log is durable and nothing is sent, so both halves carry over
+      refine ⟨?_, ?_⟩
+      · intro i k' e hget
+        rw [crash_created]
+        by_cases hij : i = k
+        · subst hij; rw [crash_nodes_self, restart_log] at hget; exact h.logs i k' e hget
+        · rw [crash_nodes_ne _ _ hij] at hget; exact h.logs i k' e hget
+      · intro src dst t l pi pt es lc n e hp hn
+        rw [crash_sent] at hp; rw [crash_created]
+        exact h.msgs src dst t l pi pt es lc n e hp hn
 
 /-- The bridge invariants hold in every reachable world. -/
 theorem bInv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :

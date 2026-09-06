@@ -221,6 +221,19 @@ theorem votes_act {members : List Nat} {w w' : World σ κ}
   | electionTimeout i hiM => exact main i hiM _ (fun _ _ h => Event.noConfusion h)
   | heartbeat i hiM => exact main i hiM _ (fun _ _ h => Event.noConfusion h)
   | client i rid cmd hiM => exact main i hiM _ (fun _ _ h => Event.noConfusion h)
+  | crash i _ =>
+      -- a restart comes back a follower, so both claims are vacuous at `i`
+      refine ⟨?_, ?_⟩
+      · intro v hv
+        by_cases heq : v = i
+        · subst heq; rw [crash_nodes_self] at hv; exact absurd rfl hv
+        · rw [crash_nodes_ne _ _ heq] at hv ⊢
+          obtain ⟨h1, h2, h3, h4⟩ := hvi v hv
+          exact ⟨h1, h2, h3, fun x hx => (h4 x hx).imp id (fun hq => by rwa [crash_sent])⟩
+      · intro v hv
+        by_cases heq : v = i
+        · subst heq; rw [crash_nodes_self] at hv; exact absurd hv (by simp)
+        · rw [crash_nodes_ne _ _ heq] at hv ⊢; exact hqi v hv
 
 /-! ## Election Safety, unconditionally -/
 
@@ -251,6 +264,7 @@ theorem fullInv_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout i hiM => exact sentFrom_act h.sent hiM _
   | heartbeat i hiM => exact sentFrom_act h.sent hiM _
   | client i rid cmd hiM => exact sentFrom_act h.sent hiM _
+  | crash i _ => intro p hp; rw [crash_sent] at hp; exact h.sent p hp
 
 /-- The full invariant holds in every reachable world. -/
 theorem fullInv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :

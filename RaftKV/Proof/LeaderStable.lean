@@ -83,19 +83,108 @@ theorem step_leader_demote {s : NodeState σ κ} {ev : Event}
       rw [Protocol.step]
       split <;> exact ⟨hl, rfl⟩
 
+
+/--
+**Campaigning always advances the term.**
+
+`role := .candidate` is written in exactly one place, `startElection`, and that
+site increments the term. So a node that is campaigning after a step either was
+already campaigning, or has just moved to a strictly larger term. Together with
+term monotonicity this is what stops a node from re-entering candidacy in a term
+it has already led — including across a crash, which returns it as a follower.
+-/
+theorem step_candidate_term (s : NodeState σ κ) (ev : Event)
+    (h : (Protocol.step s ev).1.role = Role.candidate) :
+    s.role = Role.candidate ∨ s.currentTerm < (Protocol.step s ev).1.currentTerm := by
+  cases ev with
+  | recv src m =>
+      cases m with
+      | requestVote term candId li lt =>
+          by_cases hgt : term > s.currentTerm
+          · right; rw [Protocol.step, handleRequestVote_term_eq]; omega
+          · left
+            rw [Protocol.step, handleRequestVote] at h
+            have hmsd : (maybeStepDown s term (none : Option Nat)).1 = s := by
+              rw [maybeStepDown, if_neg hgt]
+            split at h
+            · exact h
+            · dsimp only at h
+              rw [hmsd] at h
+              split at h
+              · exact h
+              · exact h
+      | requestVoteResp term g =>
+          by_cases hgt : term > s.currentTerm
+          · right; rw [Protocol.step, handleRequestVoteResp_term_eq]; omega
+          · left
+            rw [Protocol.step, handleRequestVoteResp] at h
+            split at h
+            · exact absurd h (by simp [stepDown])
+            · split at h
+              · exact h
+              · dsimp only at h
+                split at h <;> (split at h <;> first | exact h | exact absurd h (by simp))
+      | appendEntries term l pi pt es lc =>
+          by_cases hgt : term > s.currentTerm
+          · right; rw [Protocol.step, handleAppendEntries_term_eq]; omega
+          · left
+            rw [Protocol.step, handleAppendEntries] at h
+            split at h
+            · exact h
+            · dsimp only at h
+              split at h
+              · exact absurd h (by simp)
+              · dsimp only at h; exact absurd h (by simp)
+      | appendEntriesResp term ok mi =>
+          by_cases hgt : term > s.currentTerm
+          · right; rw [Protocol.step, handleAppendEntriesResp_term_eq]; omega
+          · left
+            rw [Protocol.step, handleAppendEntriesResp] at h
+            split at h
+            · exact absurd h (by simp [stepDown])
+            · split at h
+              · exact h
+              · split at h
+                · simpa using h
+                · exact h
+  | clientReq rid cmd =>
+      left
+      rw [Protocol.step, handleClientReq] at h
+      split at h
+      · exact h
+      · dsimp only at h; simpa using h
+  | electionTimeout =>
+      right
+      rw [Protocol.step] at h ⊢
+      split at h
+      · exact absurd h (by rename_i hq; rw [(by simpa using hq : s.role = Role.leader)]; simp)
+      · rename_i hq; rw [if_neg hq, startElection_term]; omega
+  | heartbeatTimeout =>
+      left
+      rw [Protocol.step] at h
+      split at h
+      · exact h
+      · exact h
+
 /--
 **A leader keeps its role for as long as its term is unchanged.**
 
 Equivalently: leadership of term `t` is a single contiguous stretch — a node
-cannot leave and re-enter leadership of the same term. This is what licenses
-treating "the term-`t` leader's log" as a single, monotonically growing object.
+cannot leave and re-enter leadership of the same term.
+
+A crash is the one exception, and it is a benign one: the node comes back a
+follower in the same term, but its log is durable and therefore untouched. That
+is the third disjunct, and `log_stable_in_term` below is what the callers of
+this lemma actually want.
 -/
-theorem leader_stable {members : List Nat} {w w' : World σ κ}
+theorem leader_stable {members : List Nat} {w w' : World σ κ} [LawfulLogStore σ]
     (hnd : members.Nodup) (hr : Reachable members w) (hs : Step members w w') {i : Nat}
     (hl : (w.nodes i).role = Role.leader) :
     ((w'.nodes i).role = Role.leader
         ∧ (w'.nodes i).currentTerm = (w.nodes i).currentTerm)
-      ∨ (w.nodes i).currentTerm < (w'.nodes i).currentTerm := by
+      ∨ (w.nodes i).currentTerm < (w'.nodes i).currentTerm
+      ∨ ((w'.nodes i).log = (w.nodes i).log
+          ∧ (w'.nodes i).currentTerm = (w.nodes i).currentTerm) := by
   have hp := pInv_reachable hr
   -- A same-term `AppendEntries` addressed to a term-`t` leader cannot exist.
   have hno : ∀ src t l pi pt es lc,
@@ -109,7 +198,7 @@ theorem leader_stable {members : List Nat} {w w' : World σ κ}
       by_cases hij : i = d
       · subst hij
         rw [act_nodes_self]
-        refine step_leader_demote hl ?_
+        refine Or.imp id Or.inl (step_leader_demote hl ?_)
         intro src t l pi pt es lc heq
         have h1 : s = src := (Event.recv.inj heq).1
         have h2 : m = Msg.appendEntries t l pi pt es lc := (Event.recv.inj heq).2
@@ -120,20 +209,26 @@ theorem leader_stable {members : List Nat} {w w' : World σ κ}
       by_cases hij : i = k
       · subst hij
         rw [act_nodes_self]
-        exact step_leader_demote hl (fun _ _ _ _ _ _ _ hq => Event.noConfusion hq)
+        exact Or.imp id Or.inl (step_leader_demote hl (fun _ _ _ _ _ _ _ hq => Event.noConfusion hq))
       · rw [act_nodes_ne _ _ _ hij]; exact Or.inl ⟨hl, rfl⟩
   | heartbeat k _ =>
       by_cases hij : i = k
       · subst hij
         rw [act_nodes_self]
-        exact step_leader_demote hl (fun _ _ _ _ _ _ _ hq => Event.noConfusion hq)
+        exact Or.imp id Or.inl (step_leader_demote hl (fun _ _ _ _ _ _ _ hq => Event.noConfusion hq))
       · rw [act_nodes_ne _ _ _ hij]; exact Or.inl ⟨hl, rfl⟩
   | client k rid cmd _ =>
       by_cases hij : i = k
       · subst hij
         rw [act_nodes_self]
-        exact step_leader_demote hl (fun _ _ _ _ _ _ _ hq => Event.noConfusion hq)
+        exact Or.imp id Or.inl (step_leader_demote hl (fun _ _ _ _ _ _ _ hq => Event.noConfusion hq))
       · rw [act_nodes_ne _ _ _ hij]; exact Or.inl ⟨hl, rfl⟩
+  | crash k _ =>
+      by_cases hij : i = k
+      · subst hij
+        rw [crash_nodes_self]
+        exact Or.inr (Or.inr ⟨restart_log _, restart_currentTerm _⟩)
+      · rw [crash_nodes_ne _ _ hij]; exact Or.inl ⟨hl, rfl⟩
 
 /--
 **A leader's log grows monotonically for as long as it leads.**
@@ -174,5 +269,29 @@ theorem leader_log_monotone {members : List Nat} {w w' : World σ κ}
         rw [act_nodes_self] at hl' ⊢
         exact step_log_of_leader _ _ hl hl'
       · rw [act_nodes_ne _ _ _ hij]; exact Or.inl rfl
+  | crash k _ =>
+      by_cases hij : i = k
+      · subst hij; rw [crash_nodes_self] at hl'; exact absurd hl' (by simp)
+      · rw [crash_nodes_ne _ _ hij]; exact Or.inl rfl
+
+
+
+/--
+**A leader's log only grows for as long as its term stands.**
+
+This is what the callers of `leader_stable` are really after, and unlike
+`leader_stable` it is undisturbed by a crash: a restart forgets the leadership
+but the log is durable, so it cannot shrink.
+-/
+theorem log_stable_in_term {members : List Nat} {w w' : World σ κ} [LawfulLogStore σ]
+    (hnd : members.Nodup) (hr : Reachable members w) (hs : Step members w w') {i : Nat}
+    (hl : (w.nodes i).role = Role.leader)
+    (hterm : (w'.nodes i).currentTerm = (w.nodes i).currentTerm) :
+    (w'.nodes i).log = (w.nodes i).log
+      ∨ ∃ e, (w'.nodes i).log = LogStore.append (w.nodes i).log e := by
+  rcases leader_stable hnd hr hs hl with ⟨h1, _⟩ | h2 | ⟨h3, _⟩
+  · exact leader_log_monotone hs hl h1
+  · omega
+  · exact Or.inl h3
 
 end RaftKV.Proof

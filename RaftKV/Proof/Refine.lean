@@ -219,6 +219,16 @@ theorem smRefines_reachable {members : List Nat} {w : World σ κ}
       | electionTimeout k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
       | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
       | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
+      | crash k hk =>
+          -- the state machine is rebuilt by replay: empty, having applied nothing
+          intro i
+          by_cases hik : i = k
+          · subst hik
+            unfold AppliedModel
+            rw [crash_nodes_self, restart_kv, restart_lastApplied, restart_log,
+              LawfulKVStore.model_empty]
+            rfl
+          · rw [crash_nodes_ne _ _ hik]; exact ih i
 
 
 /--

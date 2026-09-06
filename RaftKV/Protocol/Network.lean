@@ -238,6 +238,19 @@ def World.act (w : World σ κ) (i : Nat) (ev : Event) : World σ κ :=
     createTime := w.createTime ++ createTimeOf i s' ev w.clock,
     commitTime := w.commitTime ++ commitTimeOf i (w.nodes i) s' w.clock }
 
+/--
+Node `i` crashes and restarts.
+
+Volatile state is lost and the durable trio survives, exactly as
+`Protocol.restart` says. No ghost list moves: a crash transmits nothing, votes
+for no one, commits nothing and answers no client — it only forgets. Messages
+already in flight are untouched, because the network model already permits any
+packet never to be delivered.
+-/
+def World.crash (w : World σ κ) (i : Nat) : World σ κ :=
+  { w with nodes := fun j => if j = i then Protocol.restart (w.nodes i) else w.nodes j,
+           clock := w.clock + 1 }
+
 /-- The starting state: every node freshly initialised, nothing sent or voted. -/
 def World.init (members : List Nat) : World σ κ :=
   { nodes := fun i => Protocol.initState { me := i, members := members },
@@ -265,6 +278,64 @@ inductive Step (members : List Nat) : World σ κ → World σ κ → Prop where
   /-- A client may submit a command to any node. -/
   | client (w : World σ κ) (i rid : Nat) (cmd : Command) :
       i ∈ members → Step members w (w.act i (.clientReq rid cmd))
+  /-- Any node may crash and restart, losing everything but its durable state. -/
+  | crash (w : World σ κ) (i : Nat) :
+      i ∈ members → Step members w (w.crash i)
+
+/-! ### Reading a crashed world -/
+
+@[simp] theorem crash_nodes_self (w : World σ κ) (i : Nat) :
+    (w.crash i).nodes i = Protocol.restart (w.nodes i) := by
+  rw [World.crash]; dsimp only; rw [if_pos rfl]
+
+@[simp] theorem crash_nodes_ne (w : World σ κ) (i : Nat) {j : Nat} (h : j ≠ i) :
+    (w.crash i).nodes j = w.nodes j := by
+  rw [World.crash]; dsimp only; rw [if_neg h]
+
+@[simp] theorem crash_sent (w : World σ κ) (i : Nat) : (w.crash i).sent = w.sent := rfl
+@[simp] theorem crash_votes (w : World σ κ) (i : Nat) : (w.crash i).votes = w.votes := rfl
+@[simp] theorem crash_led (w : World σ κ) (i : Nat) : (w.crash i).led = w.led := rfl
+@[simp] theorem crash_created (w : World σ κ) (i : Nat) : (w.crash i).created = w.created := rfl
+@[simp] theorem crash_chain (w : World σ κ) (i : Nat) : (w.crash i).chain = w.chain := rfl
+@[simp] theorem crash_elected (w : World σ κ) (i : Nat) : (w.crash i).elected = w.elected := rfl
+@[simp] theorem crash_commits (w : World σ κ) (i : Nat) : (w.crash i).commits = w.commits := rfl
+@[simp] theorem crash_acks (w : World σ κ) (i : Nat) : (w.crash i).acks = w.acks := rfl
+@[simp] theorem crash_voteLogs (w : World σ κ) (i : Nat) :
+    (w.crash i).voteLogs = w.voteLogs := rfl
+@[simp] theorem crash_leaderLogs (w : World σ κ) (i : Nat) :
+    (w.crash i).leaderLogs = w.leaderLogs := rfl
+@[simp] theorem crash_hist (w : World σ κ) (i : Nat) : (w.crash i).hist = w.hist := rfl
+@[simp] theorem crash_createTime (w : World σ κ) (i : Nat) :
+    (w.crash i).createTime = w.createTime := rfl
+@[simp] theorem crash_commitTime (w : World σ κ) (i : Nat) :
+    (w.crash i).commitTime = w.commitTime := rfl
+@[simp] theorem crash_clock (w : World σ κ) (i : Nat) : (w.crash i).clock = w.clock + 1 := rfl
+
+/-- A restart keeps the durable trio and forgets the rest. -/
+@[simp] theorem restart_currentTerm (s : NodeState σ κ) :
+    (Protocol.restart s).currentTerm = s.currentTerm := rfl
+@[simp] theorem restart_votedFor (s : NodeState σ κ) :
+    (Protocol.restart s).votedFor = s.votedFor := rfl
+@[simp] theorem restart_log (s : NodeState σ κ) : (Protocol.restart s).log = s.log := rfl
+@[simp] theorem restart_cfg (s : NodeState σ κ) : (Protocol.restart s).cfg = s.cfg := rfl
+@[simp] theorem restart_role (s : NodeState σ κ) :
+    (Protocol.restart s).role = Role.follower := rfl
+@[simp] theorem restart_commitIndex (s : NodeState σ κ) :
+    (Protocol.restart s).commitIndex = 0 := rfl
+@[simp] theorem restart_lastApplied (s : NodeState σ κ) :
+    (Protocol.restart s).lastApplied = 0 := rfl
+@[simp] theorem restart_votesGranted (s : NodeState σ κ) :
+    (Protocol.restart s).votesGranted = [] := rfl
+@[simp] theorem restart_pending (s : NodeState σ κ) : (Protocol.restart s).pending = [] := rfl
+@[simp] theorem restart_kv (s : NodeState σ κ) :
+    (Protocol.restart s).kv = (KVStore.empty : κ) := rfl
+
+/-- A node's term never moves backwards across a crash either. -/
+theorem crash_term_mono (w : World σ κ) (i j : Nat) :
+    (w.nodes j).currentTerm ≤ ((w.crash i).nodes j).currentTerm := by
+  by_cases h : j = i
+  · subst h; rw [crash_nodes_self, restart_currentTerm]; exact Nat.le_refl _
+  · rw [crash_nodes_ne _ _ h]; exact Nat.le_refl _
 
 /-- Worlds arising from the initial state by finitely many steps. -/
 inductive Reachable (members : List Nat) : World σ κ → Prop where

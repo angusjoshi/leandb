@@ -184,5 +184,27 @@ theorem gInv_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout i _ => exact main i _ (fun _ _ _ _ _ hq => Event.noConfusion hq)
   | heartbeat i _ => exact main i _ (fun _ _ _ _ _ hq => Event.noConfusion hq)
   | client i rid cmd _ => exact main i _ (fun _ _ _ _ _ hq => Event.noConfusion hq)
+  | crash i _ =>
+      -- the ghost history does not move, and the two fields it talks about are durable
+      refine ⟨?_, ?_, ?_, ?_⟩
+      · intro v c t hp
+        rw [crash_votes] at hp
+        obtain ⟨hle, himp⟩ := h.vote v c t hp
+        by_cases hvi : v = i
+        · subst hvi; rw [crash_nodes_self]; simpa using And.intro hle himp
+        · rw [crash_nodes_ne _ _ hvi]; exact ⟨hle, himp⟩
+      · intro v c₁ c₂ t h₁ h₂
+        rw [crash_votes] at h₁ h₂; exact h.unique v c₁ c₂ t h₁ h₂
+      · intro v c t hp
+        rw [crash_sent] at hp; rw [crash_votes]; exact h.recorded v c t hp
+      · intro v c hvf
+        rw [crash_votes]
+        by_cases hvi : v = i
+        · subst hvi
+          rw [crash_nodes_self] at hvf ⊢
+          rw [restart_votedFor] at hvf
+          rw [restart_currentTerm]
+          exact h.selfRec v c hvf
+        · rw [crash_nodes_ne _ _ hvi] at hvf ⊢; exact h.selfRec v c hvf
 
 end RaftKV.Proof

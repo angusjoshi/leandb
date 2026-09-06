@@ -392,6 +392,13 @@ theorem pInv_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout i _ => exact main i _ (fun _ _ hq => Event.noConfusion hq) ha'
   | heartbeat i _ => exact main i _ (fun _ _ hq => Event.noConfusion hq) ha'
   | client i rid cmd _ => exact main i _ (fun _ _ hq => Event.noConfusion hq) ha'
+  | crash i _ =>
+      refine ⟨?_, ?_⟩
+      · intro p hp; rw [crash_sent] at hp; exact h.notSelf p hp
+      · intro src dst t l pi pt es lc hp
+        rw [crash_sent] at hp
+        obtain ⟨V, h1, h2, h3, h4⟩ := h.aeWinner src dst t l pi pt es lc hp
+        exact ⟨V, h1, h2, h3, fun v hv => by rw [crash_votes]; exact h4 v hv⟩
 
 /-- The provenance invariants hold in every reachable world. -/
 theorem pInv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :

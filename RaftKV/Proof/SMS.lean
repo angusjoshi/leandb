@@ -35,6 +35,11 @@ theorem committed_mono {w : World σ κ} {j : Nat} {ev : Event} {idx T : Nat} {e
   obtain ⟨L, c, lg, Q, hc, h1, h2⟩ := h
   exact ⟨L, c, lg, Q, List.mem_append_left _ hc, h1, h2⟩
 
+theorem committed_crash_mono {w : World σ κ} {i : Nat} {idx T : Nat} {e : Entry}
+    (h : Protocol.Committed w idx e T) : Protocol.Committed (w.crash i) idx e T := by
+  obtain ⟨L, c, lg, Q, hc, h1, h2⟩ := h
+  exact ⟨L, c, lg, Q, by rw [crash_commits]; exact hc, h1, h2⟩
+
 /-- **A committed index determines its entry.** -/
 theorem committed_unique {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (hrch : Reachable members w) {idx T₁ T₂ : Nat} {e₁ e₂ : Entry}
@@ -102,6 +107,12 @@ theorem appliedBound_reachable {members : List Nat} {w : World σ κ}
       | electionTimeout k hk => exact key k _ rfl
       | heartbeat k hk => exact key k _ rfl
       | client k rid cmd hk => exact key k _ rfl
+      | crash k hk =>
+          intro i
+          by_cases hik : i = k
+          · subst hik; rw [crash_nodes_self, restart_lastApplied, restart_commitIndex]
+            exact Nat.le_refl _
+          · rw [crash_nodes_ne _ _ hik]; exact ih i
 
 
 /-! ## Commitment bookkeeping -/
@@ -422,6 +433,32 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
+  | crash k hk =>
+      -- a restart zeroes the volatile indices, so its own claims become vacuous
+      refine ⟨?_, ?_, ?_⟩
+      · intro i
+        by_cases hik : i = k
+        · subst hik; rw [crash_nodes_self, restart_commitIndex]; omega
+        · rw [crash_nodes_ne _ _ hik]; exact h.bound i
+      · intro src dst t l pi pt es lc hp
+        rw [crash_sent] at hp
+        obtain ⟨lgM, h1, h2, hp2, hp3, hp4, h3⟩ := h.msg src dst t l pi pt es lc hp
+        refine ⟨lgM, by rw [crash_leaderLogs]; exact h1, h2, hp2, hp3, hp4, ?_⟩
+        intro k' e hk' hget
+        obtain ⟨T', hcom, hT'⟩ := h3 k' e hk' hget
+        exact ⟨T', committed_crash_mono hcom, hT'⟩
+      · intro i k' e hk' hget
+        by_cases hik : i = k
+        · exfalso
+          subst hik
+          rw [crash_nodes_self, restart_commitIndex] at hk'
+          rw [crash_nodes_self, restart_log] at hget
+          have hz : k' = 0 := by omega
+          rw [hz] at hget
+          simp at hget
+        · rw [crash_nodes_ne _ _ hik] at hk' hget ⊢
+          obtain ⟨T', hcom, hT'⟩ := h.cov i k' e hk' hget
+          exact ⟨T', committed_crash_mono hcom, hT'⟩
 
 theorem sInv_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : SInv members w := by

@@ -195,12 +195,8 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
           have hold : (w.nodes i).currentTerm = e.term :=
             Nat.le_antisymm (by rw [← hterm]; exact hmono) hb
           have hget := h.inLeader i k e h' hold
-          have hlead : (w.nodes i).role = Role.leader := hl.leads i e.term hled hold
-          have hlead' : ((w.act i ev).nodes i).role = Role.leader := by
-            rcases leader_stable hnd hr hs hlead with ⟨h1, _⟩ | h2
-            · exact h1
-            · exfalso; rw [hold] at h2; rw [act_nodes_self] at h2; omega
-          rcases leader_log_monotone hs hlead hlead' with hlog | ⟨e', hlog⟩
+          rcases led_log_stable hnd hr hs hled hold (by rw [act_nodes_self]; exact hterm)
+            with hlog | ⟨e', hlog⟩
           · rw [act_nodes_self] at hlog; rw [hlog]; exact hget
           · rw [act_nodes_self] at hlog
             rw [hlog]
@@ -255,6 +251,20 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      -- nothing is created, and the log a creator holds is durable
+      refine ⟨?_, ?_, ?_⟩
+      · intro i k' e hm; rw [crash_created] at hm; rw [crash_led]; exact h.ledRec i k' e hm
+      · intro i k' e hm hterm
+        rw [crash_created] at hm
+        by_cases hij : i = k
+        · subst hij
+          rw [crash_nodes_self, restart_log]
+          rw [crash_nodes_self, restart_currentTerm] at hterm
+          exact h.inLeader i k' e hm hterm
+        · rw [crash_nodes_ne _ _ hij] at hterm ⊢; exact h.inLeader i k' e hm hterm
+      · intro i j' k' e₁ e₂ h₁ h₂ hteq
+        rw [crash_created] at h₁ h₂; exact h.uniq i j' k' e₁ e₂ h₁ h₂ hteq
 
 /-- The created-entry invariants hold in every reachable world. -/
 theorem cInv_reachable {members : List Nat} {w : World σ κ}

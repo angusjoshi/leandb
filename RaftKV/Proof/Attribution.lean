@@ -67,6 +67,11 @@ theorem ack_term_le {members : List Nat} {w : World σ κ}
       | electionTimeout k hk => exact key k _ rfl
       | heartbeat k hk => exact key k _ rfl
       | client k rid cmd hk => exact key k _ rfl
+      | crash k hk =>
+          by_cases hvk : v = k
+          · subst hvk; rw [crash_nodes_self, restart_currentTerm]
+            exact ih (by rwa [crash_acks] at h)
+          · rw [crash_nodes_ne _ _ hvk]; exact ih (by rwa [crash_acks] at h)
 
 /-- A freshly recorded acknowledgement carries the node's post-state term. -/
 theorem fresh_ack_term {w : World σ κ} {v T m : Nat} {lgp : σ} {ev : Event}
@@ -231,6 +236,18 @@ theorem ackHold_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
+  | crash k hk =>
+      intro v T m lgp hm hT
+      rw [crash_acks] at hm
+      by_cases hvk : v = k
+      · subst hvk
+        rw [crash_nodes_self, restart_currentTerm] at hT
+        rw [crash_nodes_self, restart_log]
+        obtain ⟨L, lgL, h1, h2, h3⟩ := h v T m lgp hm hT
+        exact ⟨L, lgL, by rw [crash_leaderLogs]; exact h1, h2, h3⟩
+      · rw [crash_nodes_ne _ _ hvk] at hT ⊢
+        obtain ⟨L, lgL, h1, h2, h3⟩ := h v T m lgp hm hT
+        exact ⟨L, lgL, by rw [crash_leaderLogs]; exact h1, h2, h3⟩
 
 /-- **An acknowledged prefix is held for as long as its term stands.** -/
 theorem ackHold_reachable {members : List Nat} {w : World σ κ}
@@ -433,6 +450,17 @@ theorem changeAttributed_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
+  | crash k hk =>
+      intro v T m lgp hm k' hk'
+      rw [crash_acks] at hm
+      by_cases hvk : v = k
+      · subst hvk
+        rw [crash_nodes_self, restart_currentTerm, restart_votedFor, restart_log]
+        obtain ⟨X, tX, lgX, h1, h2, h3, h5, h6, h4⟩ := h v T m lgp hm k' hk'
+        exact ⟨X, tX, lgX, by rw [crash_leaderLogs]; exact h1, h2, h3, h5, h6, h4⟩
+      · rw [crash_nodes_ne _ _ hvk]
+        obtain ⟨X, tX, lgX, h1, h2, h3, h5, h6, h4⟩ := h v T m lgp hm k' hk'
+        exact ⟨X, tX, lgX, by rw [crash_leaderLogs]; exact h1, h2, h3, h5, h6, h4⟩
 
 /-- **Change attribution holds in every reachable world.** -/
 theorem changeAttributed_reachable {members : List Nat} {w : World σ κ}
@@ -490,6 +518,12 @@ theorem voteTermLe_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      intro v U lgv hm
+      rw [crash_voteLogs] at hm
+      by_cases hvk : v = k
+      · subst hvk; rw [crash_nodes_self, restart_currentTerm]; exact h v U lgv hm
+      · rw [crash_nodes_ne _ _ hvk]; exact h v U lgv hm
 
 theorem voteTermLe_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :
     VoteTermLe w := by
@@ -609,6 +643,11 @@ theorem voteAttributed_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      intro v T m lgp hack U lgv hvote hTU k' hk'
+      rw [crash_acks] at hack; rw [crash_voteLogs] at hvote
+      obtain ⟨X, tX, lgX, h1, h2, h3, h5, h4⟩ := h v T m lgp hack U lgv hvote hTU k' hk'
+      exact ⟨X, tX, lgX, by rw [crash_leaderLogs]; exact h1, h2, h3, h5, h4⟩
 
 /-- **Vote-time attribution holds in every reachable world.** -/
 theorem voteAttributed_reachable {members : List Nat} {w : World σ κ}
@@ -681,7 +720,10 @@ theorem electedAttributed_step {members : List Nat} {w w' : World σ κ}
             have hXv : X = v :=
               led_unique hnd hr' (by rw [act_led]; exact List.mem_append_left _ hXled) hvled
             subst hXv
-            have := led_not_leader_term_gt hnd hr hXled h5
+            -- a node that has led `tX` can never campaign in `tX` again, and
+            -- assuming leadership without a term change means it just did
+            have := led_not_candidate_term_gt hnd hr hXled
+              (leader_from_candidate h4 h5 (by omega))
             omega
         · have hq : LogStore.get lgel k = LogStore.get (w.nodes v).log k := by
             rw [h3]
@@ -697,6 +739,11 @@ theorem electedAttributed_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      intro v T m lgp hack U lgel hel hTU k' hk'
+      rw [crash_acks] at hack; rw [crash_elected] at hel
+      obtain ⟨X, tX, lgX, h1, h2, h3, h5, h4⟩ := h v T m lgp hack U lgel hel hTU k' hk'
+      exact ⟨X, tX, lgX, by rw [crash_leaderLogs]; exact h1, h2, h3, h5, h4⟩
 
 theorem electedAttributed_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : ElectedAttributed w := by
@@ -800,12 +847,15 @@ theorem electedTermLt_step {members : List Nat} {w w' : World σ κ}
       have hbnd := hled.bound c x.term hledc
       have hmono := step_term_mono (w.nodes c) ev
       have hterm : (w.nodes c).currentTerm = x.term := by omega
-      exact h5 (hled.leads c x.term hledc hterm)
+      exact hled.leads c x.term hledc hterm
+        (leader_from_candidate h4 h5 (by omega))
   cases hs with
   | deliver s d m hd hm => exact key d _ rfl
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      intro X U lgel hm; rw [crash_elected] at hm; exact h X U lgel hm
 
 theorem electedTermLt_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : ElectedTermLt w := by

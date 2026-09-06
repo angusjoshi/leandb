@@ -370,6 +370,23 @@ theorem chInv_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
+  | crash k hk =>
+      -- logs are durable; the chain, the payloads and the mint records do not move
+      refine ⟨?_, ?_, ?_, ?_⟩
+      · intro i idx e hget h2
+        rw [crash_chain]
+        by_cases hij : i = k
+        · subst hij
+          rw [crash_nodes_self, restart_log] at hget ⊢
+          exact h.logs i idx e hget h2
+        · rw [crash_nodes_ne _ _ hij] at hget ⊢; exact h.logs i idx e hget h2
+      · intro src dst t l pi pt es lc n e hp hn h2
+        rw [crash_sent] at hp; rw [crash_chain]
+        exact h.msgs src dst t l pi pt es lc n e hp hn h2
+      · intro idx e p hm; rw [crash_chain] at hm; rw [crash_created]
+        exact h.created idx e p hm
+      · intro idx e p₁ p₂ h₁ h₂
+        rw [crash_chain] at h₁ h₂; exact h.det idx e p₁ p₂ h₁ h₂
 
 /-- The chain invariants hold in every reachable world. -/
 theorem chInv_reachable {members : List Nat} {w : World σ κ}

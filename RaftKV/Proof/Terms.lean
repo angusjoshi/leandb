@@ -180,5 +180,6 @@ theorem world_term_mono {members : List Nat} {w w' : World σ κ} (h : Step memb
   | electionTimeout j _ => exact act_term_mono _ _ _ _
   | heartbeat j _ => exact act_term_mono _ _ _ _
   | client j rid cmd _ => exact act_term_mono _ _ _ _
+  | crash j _ => exact crash_term_mono _ _ _
 
 end RaftKV.Proof

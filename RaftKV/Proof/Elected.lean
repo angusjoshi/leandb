@@ -96,12 +96,8 @@ theorem eInv_step {members : List Nat} {w w' : World σ κ}
           rw [act_nodes_self] at hmono
           have hold : (w.nodes i).currentTerm = t := by omega
           have hpre := h.prefixed i t lg h' hold
-          have hlead : (w.nodes i).role = Role.leader := hl.leads i t hled hold
-          have hlead' : ((w.act i ev).nodes i).role = Role.leader := by
-            rcases leader_stable hnd hr hs hlead with ⟨h1, _⟩ | h2
-            · exact h1
-            · exfalso; rw [hold] at h2; rw [act_nodes_self] at h2; omega
-          rcases leader_log_monotone hs hlead hlead' with hlog | ⟨e', hlog⟩
+          rcases led_log_stable hnd hr hs hled hold (by rw [act_nodes_self]; exact hterm)
+            with hlog | ⟨e', hlog⟩
           · rw [act_nodes_self] at hlog; rw [hlog]; exact hpre k hk
           · rw [act_nodes_self] at hlog
             rw [hlog, LogStore.get_append, if_neg ?_]
@@ -125,6 +121,18 @@ theorem eInv_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      -- the election record is a ghost and the log it names is durable
+      refine ⟨?_, ?_⟩
+      · intro i t lg hm; rw [crash_elected] at hm; rw [crash_led]; exact h.led i t lg hm
+      · intro i t lg hm hterm k' hk'
+        rw [crash_elected] at hm
+        by_cases hij : i = k
+        · subst hij
+          rw [crash_nodes_self, restart_log]
+          rw [crash_nodes_self, restart_currentTerm] at hterm
+          exact h.prefixed i t lg hm hterm k' hk'
+        · rw [crash_nodes_ne _ _ hij] at hterm ⊢; exact h.prefixed i t lg hm hterm k' hk'
 
 /-- The election-record invariants hold in every reachable world. -/
 theorem eInv_reachable {members : List Nat} {w : World σ κ}

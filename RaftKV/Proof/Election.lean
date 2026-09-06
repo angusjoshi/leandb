@@ -196,6 +196,19 @@ theorem vote_act {members : List Nat} {w w' : World σ κ}
   | electionTimeout i _ => exact main i _ (fun _ _ _ _ _ h => Event.noConfusion h)
   | heartbeat i _ => exact main i _ (fun _ _ _ _ _ h => Event.noConfusion h)
   | client i rid cmd _ => exact main i _ (fun _ _ _ _ _ h => Event.noConfusion h)
+  | crash i _ =>
+      -- persistence is exactly what makes this survive: `currentTerm` and
+      -- `votedFor` are the durable fields, and `sent` never moves
+      refine ⟨?_, ?_⟩
+      · intro v c t hp
+        rw [crash_sent] at hp
+        obtain ⟨hle, himp⟩ := hv v c t hp
+        by_cases hvi : v = i
+        · subst hvi; rw [crash_nodes_self]; simpa using And.intro hle himp
+        · rw [crash_nodes_ne _ _ hvi]; exact ⟨hle, himp⟩
+      · intro v c₁ c₂ t h₁ h₂
+        rw [crash_sent] at h₁ h₂
+        exact hu v c₁ c₂ t h₁ h₂
 
 /-- The invariant is preserved by every step. -/
 theorem inv_step {members : List Nat} {w w' : World σ κ}
@@ -210,6 +223,13 @@ theorem inv_step {members : List Nat} {w w' : World σ κ}
       exact ⟨cfg_act h.cfg _ _, rvwf_act h.cfg h.rvwf _ _, hvu.1, hvu.2⟩
   | client i rid cmd hi =>
       exact ⟨cfg_act h.cfg _ _, rvwf_act h.cfg h.rvwf _ _, hvu.1, hvu.2⟩
+  | crash i hi =>
+      refine ⟨?_, ?_, hvu.1, hvu.2⟩
+      · intro j
+        by_cases hji : j = i
+        · subst hji; rw [crash_nodes_self, restart_cfg]; exact h.cfg j
+        · rw [crash_nodes_ne _ _ hji]; exact h.cfg j
+      · intro a b t c li lt hp; rw [crash_sent] at hp; exact h.rvwf a b t c li lt hp
 
 /-- **The invariant holds in every reachable world.** -/
 theorem inv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :

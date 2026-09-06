@@ -243,6 +243,20 @@ theorem candInv_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      -- a restart comes back a follower, so the advertisement claim is vacuous at `k`
+      refine ⟨?_, ?_⟩
+      · intro c d U cid li lt hp
+        rw [crash_sent] at hp
+        by_cases hck : c = k
+        · subst hck; rw [crash_nodes_self, restart_currentTerm]; exact h.bound c d U cid li lt hp
+        · rw [crash_nodes_ne _ _ hck]; exact h.bound c d U cid li lt hp
+      · intro c d U cid li lt hp hterm hrole
+        rw [crash_sent] at hp
+        by_cases hck : c = k
+        · subst hck; rw [crash_nodes_self, restart_role] at hrole; exact absurd hrole (by simp)
+        · rw [crash_nodes_ne _ _ hck] at hterm hrole ⊢
+          exact h.log c d U cid li lt hp hterm hrole
 
 /-- The candidate-advertisement invariants hold in every reachable world. -/
 theorem candInv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :
@@ -319,6 +333,10 @@ theorem rvElected_step {members : List Nat} {w w' : World σ κ}
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
+  | crash k hk =>
+      intro c d U cid li lt lg hp hel
+      rw [crash_sent] at hp; rw [crash_elected] at hel
+      exact h c d U cid li lt lg hp hel
 
 /-- `RVElected` holds in every reachable world. -/
 theorem rvElected_reachable {members : List Nat} {w : World σ κ}
