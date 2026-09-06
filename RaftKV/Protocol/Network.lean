@@ -428,10 +428,10 @@ agree on every entry up to that index.
 -/
 def LogMatching [LawfulLogStore σ] (w : World σ κ) : Prop :=
   ∀ i j idx e₁ e₂,
-    LogStore.get (w.nodes i).log idx = some e₁ →
-    LogStore.get (w.nodes j).log idx = some e₂ →
+    LogStore.get (w.full i) idx = some e₁ →
+    LogStore.get (w.full j) idx = some e₂ →
     e₁.term = e₂.term →
-    ∀ k ≤ idx, LogStore.get (w.nodes i).log k = LogStore.get (w.nodes j).log k
+    ∀ k ≤ idx, LogStore.get (w.full i) k = LogStore.get (w.full j) k
 
 /-! ### The client-visible history -/
 

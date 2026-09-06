@@ -282,10 +282,27 @@ theorem full_get_of {members : List Nat} {w : World σ κ} (h : Reachable member
     LogStore.get (w.full i) k = some e := by
   rw [← full_get h (LogStore.firstIndex_le_of_get hg)]; exact hg
 
+/-- A term the real log reports, the logical log reports too. -/
+theorem full_termAt {members : List Nat} {w : World σ κ} (h : Reachable members w)
+    {i k t : Nat} (hg : LogStore.termAt (w.nodes i).log k = some t) :
+    LogStore.termAt (w.full i) k = some t := by
+  unfold LogStore.termAt at hg ⊢
+  cases hq : LogStore.get (w.nodes i).log k with
+  | none => rw [hq] at hg; exact absurd hg (by simp)
+  | some e => rw [← full_get h (LogStore.firstIndex_le_of_get hq), hq]; rw [hq] at hg; exact hg
+
 /-- The two logs reach exactly as far as each other. -/
 theorem full_lastIndex {members : List Nat} {w : World σ κ} (h : Reachable members w) (i : Nat) :
     LogStore.lastIndex (w.full i) = LogStore.lastIndex (w.nodes i).log :=
   (fullBridge_reachable h).last i
+
+/-- The logical log has no holes: an entry at `idx` implies entries at every index below. -/
+theorem full_isSome_below {members : List Nat} {w : World σ κ} (h : Reachable members w)
+    {i idx m : Nat} {e : Entry} (hg : LogStore.get (w.full i) idx = some e)
+    (h1 : 1 ≤ m) (hm : m ≤ idx) : (LogStore.get (w.full i) m).isSome := by
+  have hidx := (LogStore.get_isSome_iff (w.full i) idx).mp (by rw [hg]; rfl)
+  refine (LogStore.get_isSome_iff (w.full i) m).mpr ⟨?_, by omega⟩
+  rw [(fullBridge_reachable h).first i]; omega
 
 /-- The logical log has discarded nothing. -/
 theorem full_firstIndex {members : List Nat} {w : World σ κ} (h : Reachable members w) (i : Nat) :

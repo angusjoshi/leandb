@@ -437,6 +437,13 @@ theorem appendFrom_above_unchanged : ∀ (es : List Entry) (lg : σ) (startIdx k
 
 The three facts the splice lemmas need, read straight off the check.
 -/
+theorem aeAccepts_term {κ' : Type} [KVStore κ'] {s : NodeState σ κ'}
+    {term prevIdx prevTerm : Nat} (h : Protocol.aeAccepts s term prevIdx prevTerm = true) :
+    s.currentTerm ≤ term := by
+  unfold Protocol.aeAccepts at h
+  simp only [Bool.and_eq_true, Bool.not_eq_true', decide_eq_false_iff_not] at h
+  omega
+
 theorem aeAccepts_facts {κ' : Type} [KVStore κ'] {s : NodeState σ κ'}
     {term prevIdx prevTerm : Nat} (h : Protocol.aeAccepts s term prevIdx prevTerm = true) :
     prevIdx ≤ LogStore.lastIndex s.log

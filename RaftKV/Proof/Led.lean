@@ -280,4 +280,56 @@ theorem led_log_stable {members : List Nat} {w w' : World σ κ} [LawfulLogStore
       · subst hij; rw [crash_nodes_self, restart_log]; exact Or.inl rfl
       · rw [crash_nodes_ne _ _ hij]; exact Or.inl rfl
 
+/--
+The same for the **logical** log: a leader still holding its term has either not
+touched it or appended to it.
+
+The proof is `led_log_stable`'s, one branch at a time, over `fullStep` instead
+of `step` — which is the point of defining the logical log to take the same
+operations.
+-/
+theorem led_full_stable {members : List Nat} {w w' : World σ κ} [LawfulLogStore σ]
+    (hnd : members.Nodup) (hr : Reachable members w) (hs : Step members w w') {i t : Nat}
+    (hled : (i, t) ∈ w.led) (hold : (w.nodes i).currentTerm = t)
+    (hnew : (w'.nodes i).currentTerm = t) :
+    w'.full i = w.full i ∨ ∃ e, w'.full i = LogStore.append (w.full i) e := by
+  have hp := pInv_reachable hr
+  have hwon : WonTerm members w i t := (ledInv_reachable hnd hr).won i t hled
+  have key : ∀ (j : Nat) (ev : Event), w' = w.act j ev →
+      (∀ src m', ev = Event.recv src m' → (src, j, m') ∈ w.sent) →
+      w'.full i = w.full i ∨ ∃ e, w'.full i = LogStore.append (w.full i) e := by
+    intro j ev hw hdel
+    subst hw
+    by_cases hij : i = j
+    · subst hij
+      rw [act_full_self]
+      rcases full_step (w.nodes i) (w.full i) ev with hl | ⟨rid, cmd, _, _, hl⟩ |
+        ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩
+      · exact Or.inl hl
+      · exact Or.inr ⟨_, hl⟩
+      · exfalso
+        subst hev
+        have hct := aeAccepts_term ha
+        have hterm : term = t := by
+          rw [act_nodes_self, Protocol.step, handleAppendEntries_term_eq] at hnew
+          omega
+        subst hterm
+        have hpkt := hdel src (Msg.appendEntries term l pi pt es lc) rfl
+        have hwin : WonTerm members w src term := hp.aeWinner src i term l pi pt es lc hpkt
+        have hsi : src = i := everWinner_unique hnd hr hwin (hold ▸ hwon)
+        subst hsi
+        exact hp.notSelf (src, src, Msg.appendEntries term l pi pt es lc) hpkt (by simp)
+    · rw [act_full_ne _ _ _ hij]; exact Or.inl rfl
+  cases hs with
+  | deliver s d m hd hmem =>
+      refine key d _ rfl ?_
+      intro src' m' heq
+      have h1 : s = src' := (Event.recv.inj heq).1
+      have h2 : m = m' := (Event.recv.inj heq).2
+      subst h2; subst h1; exact hmem
+  | electionTimeout k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
+  | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
+  | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
+  | crash k hk => exact Or.inl rfl
+
 end RaftKV.Proof

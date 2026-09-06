@@ -123,10 +123,10 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
     intro j ev hw
     subst hw
     -- Everything we need to know about a freshly minted entry.
-    have fresh : ∀ i k e, (i, k, e) ∈ createdOf j (Protocol.step (w.nodes j) ev).1 ev →
+    have fresh : ∀ i k e, (i, k, e) ∈ createdOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) ev →
         i = j ∧ (w.nodes j).role = Role.leader ∧ e.term = (w.nodes j).currentTerm
-          ∧ k = LogStore.lastIndex (w.nodes j).log + 1
-          ∧ ((w.act j ev).nodes j).log = LogStore.append (w.nodes j).log e := by
+          ∧ k = LogStore.lastIndex (w.full j) + 1
+          ∧ (w.act j ev).full j = LogStore.append (w.full j) e := by
       intro i k e hmem
       cases ev with
       | recv a b => simp [createdOf] at hmem
@@ -140,10 +140,10 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
             · exfalso
               rw [Protocol.step, handleClientReq, if_pos (by simp [hc])] at h2
               exact hc h2
-          have hlog : (Protocol.step (w.nodes j) (Event.clientReq rid cmd)).1.log
-              = LogStore.append (w.nodes j).log
+          have hlog : fullStep (w.nodes j) (w.full j) (Event.clientReq rid cmd)
+              = LogStore.append (w.full j)
                   { term := (w.nodes j).currentTerm, cmd := cmd, reqId := rid } := by
-            rw [Protocol.step]; exact handleClientReq_log hlead
+            rw [fullStep, if_pos hlead]
           have hterm : (Protocol.step (w.nodes j) (Event.clientReq rid cmd)).1.currentTerm
               = (w.nodes j).currentTerm := by
             rw [Protocol.step]; exact handleClientReq_term_eq
@@ -155,9 +155,9 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
             rw [hmem.2.2, hterm]
           refine ⟨h1, hlead, by rw [hek], ?_, ?_⟩
           · rw [h3, hlog, LogStore.lastIndex_append]
-          · rw [act_nodes_self, hlog, hek]
+          · rw [act_full_self, hlog, hek]
     -- A fresh entry's creator is a leader in the post-state too.
-    have freshPost : ∀ i k e, (i, k, e) ∈ createdOf j (Protocol.step (w.nodes j) ev).1 ev →
+    have freshPost : ∀ i k e, (i, k, e) ∈ createdOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) ev →
         (Protocol.step (w.nodes j) ev).1.role = Role.leader
           ∧ (Protocol.step (w.nodes j) ev).1.currentTerm = e.term := by
       intro i k e hmem
@@ -189,7 +189,8 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
       rcases List.mem_append.mp hmem with h' | h'
       · by_cases hij : i = j
         · subst hij
-          rw [act_nodes_self] at hterm ⊢
+          rw [act_nodes_self] at hterm
+          rw [act_full_self]
           have hled : (i, e.term) ∈ w.led := h.ledRec i k e h'
           have hb := hl.bound i e.term hled
           have hmono := act_term_mono w i ev i
@@ -197,14 +198,15 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
           have hold : (w.nodes i).currentTerm = e.term :=
             Nat.le_antisymm (by rw [← hterm]; exact hmono) hb
           have hget := h.inLeader i k e h' hold
-          rcases led_log_stable hnd hr hs hled hold (by rw [act_nodes_self]; exact hterm)
+          rcases led_full_stable hnd hr hs hled hold (by rw [act_nodes_self]; exact hterm)
             with hlog | ⟨e', hlog⟩
-          · rw [act_nodes_self] at hlog; rw [hlog]; exact hget
-          · rw [act_nodes_self] at hlog
+          · rw [act_full_self] at hlog; rw [hlog]; exact hget
+          · rw [act_full_self] at hlog
             rw [hlog]
             refine (LogStore.get_append_of_le _ _ _ ?_).trans hget
-            exact ((LogStore.get_isSome_iff (w.nodes i).log k).mp (by rw [hget]; rfl)).2
-        · rw [act_nodes_ne _ _ _ hij] at hterm ⊢
+            exact LogStore.le_lastIndex_of_get hget
+        · rw [act_nodes_ne _ _ _ hij] at hterm
+          rw [act_full_ne _ _ _ hij]
           exact h.inLeader i k e h' hterm
       · obtain ⟨h1, _, _, h4, h5⟩ := fresh i k e h'
         subst h1
@@ -216,7 +218,7 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
       -- A fresh entry lands strictly beyond everything its creator already holds,
       -- so it cannot collide with anything created earlier in the same term.
       have collide : ∀ a b (x y : Entry), (a, k, x) ∈ w.created →
-          (b, k, y) ∈ createdOf j (Protocol.step (w.nodes j) ev).1 ev →
+          (b, k, y) ∈ createdOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) ev →
           x.term = y.term → x = y := by
         intro a b x y hx hy hxy
         exfalso
@@ -228,7 +230,7 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
         subst haj
         have hold : (w.nodes a).currentTerm = x.term := by rw [hxy, hyterm]
         have hget := h.inLeader a k x hx hold
-        have hle := ((LogStore.get_isSome_iff (w.nodes a).log k).mp (by rw [hget]; rfl)).2
+        have hle := LogStore.le_lastIndex_of_get hget
         omega
       rcases List.mem_append.mp hm₁ with h₁ | h₁ <;>
         rcases List.mem_append.mp hm₂ with h₂ | h₂
@@ -259,12 +261,12 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
       · intro i k' e hm; rw [crash_created] at hm; rw [crash_led]; exact h.ledRec i k' e hm
       · intro i k' e hm hterm
         rw [crash_created] at hm
+        rw [crash_full]
         by_cases hij : i = k
         · subst hij
-          rw [crash_nodes_self, restart_log]
           rw [crash_nodes_self, restart_currentTerm] at hterm
           exact h.inLeader i k' e hm hterm
-        · rw [crash_nodes_ne _ _ hij] at hterm ⊢; exact h.inLeader i k' e hm hterm
+        · rw [crash_nodes_ne _ _ hij] at hterm; exact h.inLeader i k' e hm hterm
       · intro i j' k' e₁ e₂ h₁ h₂ hteq
         rw [crash_created] at h₁ h₂; exact h.uniq i j' k' e₁ e₂ h₁ h₂ hteq
 
