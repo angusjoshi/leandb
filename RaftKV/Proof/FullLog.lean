@@ -357,6 +357,17 @@ theorem full_lastTerm {members : List Nat} {w : World σ κ} (h : Reachable memb
       · simp only [LogStore.lastIndex] at hc; omega
     rw [hb.agree i _ hfi]
 
+/-- The term read off either log at an index the real one can be asked about. -/
+theorem full_termAt_getD {members : List Nat} {w : World σ κ} (h : Reachable members w)
+    {i k : Nat} (hk : k = 0 ∨ LogStore.firstIndex (w.nodes i).log ≤ k) :
+    (LogStore.termAt (w.full i) k).getD 0 = (LogStore.termAt (w.nodes i).log k).getD 0 := by
+  rcases hk with hz | hf
+  · subst hz
+    unfold LogStore.termAt
+    rw [LogStore.get_zero, LogStore.get_zero]
+  · unfold LogStore.termAt
+    rw [full_get h hf]
+
 /-- The two logs reach exactly as far as each other. -/
 theorem full_lastIndex {members : List Nat} {w : World σ κ} (h : Reachable members w) (i : Nat) :
     LogStore.lastIndex (w.full i) = LogStore.lastIndex (w.nodes i).log :=

@@ -525,7 +525,7 @@ theorem handleAppendEntries_log {s : NodeState σ κ}
       right
       have hcons0 : ¬prevIdx = 0 ∨ ¬LogStore.firstIndex s.log = 1 →
           LogStore.termAt s.log prevIdx = some prevTerm := by
-        simpa [hmsd, aeConsistent] using hcons
+        simpa [aeConsistent] using hcons
       have hc : ¬prevIdx = 0 → LogStore.termAt s.log prevIdx = some prevTerm :=
         fun h => hcons0 (Or.inl h)
       have hfw : LogStore.firstIndex s.log ≤ prevIdx + 1 := by
@@ -565,6 +565,7 @@ theorem handleAppendEntries_ack {s : NodeState σ' κ'} [LogStore σ'] [LawfulLo
       ∧ prevIdx ≤ LogStore.lastIndex s.log
       ∧ (prevIdx ≠ 0 → LogStore.termAt s.log prevIdx = some prevTerm)
       ∧ LogStore.firstIndex s.log ≤ prevIdx + 1
+      ∧ Protocol.aeAccepts s term prevIdx prevTerm = true
       ∧ s.currentTerm ≤ term
       ∧ (handleAppendEntries s src term leaderId prevIdx prevTerm es lc).1.role
           = Role.follower := by
@@ -586,7 +587,7 @@ theorem handleAppendEntries_ack {s : NodeState σ' κ'} [LogStore σ'] [LawfulLo
     · rename_i hcons
       have hcons0 : ¬prevIdx = 0 ∨ ¬LogStore.firstIndex s.log = 1 →
           LogStore.termAt s.log prevIdx = some prevTerm := by
-        simpa [hmsd, aeConsistent] using hcons
+        simpa [aeConsistent] using hcons
       have hc : ¬prevIdx = 0 → LogStore.termAt s.log prevIdx = some prevTerm :=
         fun h => hcons0 (Or.inl h)
       have hfw : LogStore.firstIndex s.log ≤ prevIdx + 1 := by
@@ -602,7 +603,11 @@ theorem handleAppendEntries_ack {s : NodeState σ' κ'} [LogStore σ'] [LawfulLo
       · rcases List.mem_cons.mp h' with h'' | h''
         · have hm := (Action.send.inj h'').2
           obtain ⟨ht, _, hmi⟩ := Msg.appendEntriesResp.inj hm
-          refine ⟨?_, hmi, ?_, ?_, hc, hfw, by omega, ?_⟩
+          have hacc : Protocol.aeAccepts s term prevIdx prevTerm = true := by
+            unfold Protocol.aeAccepts
+            simp only [Bool.and_eq_true, Bool.not_eq_true', decide_eq_false_iff_not]
+            exact ⟨hlt, by simpa using hcons⟩
+          refine ⟨?_, hmi, ?_, ?_, hc, hfw, hacc, by omega, ?_⟩
           · rw [ht]; simp [hmt]
           · rw [handleAppendEntries, if_neg hlt]
             dsimp only

@@ -272,26 +272,26 @@ def handleAppendEntries (s : NodeState σ κ)
     let sd := maybeStepDown s term (some leaderId)
     let downActs := sd.2
     let vf := some (sd.1.votedFor.getD leaderId)
-    let s := { sd.1 with role := .follower, leaderHint := some leaderId, votedFor := vf }
+    let s' := { sd.1 with role := .follower, leaderHint := some leaderId, votedFor := vf }
     -- The consistency check, plus the requirement that the splice start inside
     -- the live window. `firstIndex` is `1` until something has been compacted,
-    -- so the second disjunct is the old `prevIdx == 0` case unchanged; once a
+    -- so the first disjunct is the old `prevIdx == 0` case unchanged; once a
     -- prefix is gone, a payload that would land in it is refused and the leader
     -- backs off (or, when it too has discarded that far, sends a snapshot).
-    -- `s` here is the stepped-down state, whose log is the one `aeAccepts` looks
-    -- at, so the two decisions agree by construction.
+    -- Evaluated against the *incoming* state, whose log `maybeStepDown` does not
+    -- touch, so that `aeAccepts` names this very decision.
     let consistent := aeConsistent s prevIdx prevTerm
     if !consistent then
-      (s, downActs ++ [Action.send src (.appendEntriesResp s.currentTerm false 0)])
+      (s', downActs ++ [Action.send src (.appendEntriesResp s'.currentTerm false 0)])
     else
-      let lg := appendFrom s.log (prevIdx + 1) entries
+      let lg := appendFrom s'.log (prevIdx + 1) entries
       let matchIdx := prevIdx + entries.length
-      let s := { s with log := lg }
+      let s'' := { s' with log := lg }
       -- never move the commit index backwards: a stale or short payload must not
       -- retract what this node already considers committed
-      let s := { s with
-        commitIndex := max s.commitIndex (min leaderCommit (LogStore.lastIndex lg)) }
-      let ac := applyCommitted s
+      let s''' := { s'' with
+        commitIndex := max s''.commitIndex (min leaderCommit (LogStore.lastIndex lg)) }
+      let ac := applyCommitted s'''
       (ac.1, downActs ++ Action.send src (.appendEntriesResp ac.1.currentTerm true matchIdx)
             :: ac.2)
 

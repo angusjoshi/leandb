@@ -35,7 +35,9 @@ theorem msgFromLeaderLog_init (members : List Nat) :
 
 /-- **Preserved by every step.** -/
 theorem msgFromLeaderLog_step {members : List Nat} {w w' : World σ κ}
-    (h : MsgFromLeaderLog w) (hs : Step members w w') : MsgFromLeaderLog w' := by
+    (hr : Reachable members w) (h : MsgFromLeaderLog w) (hs : Step members w w') :
+    MsgFromLeaderLog w' := by
+  have hr' : Reachable members w' := Reachable.tail hr hs
   have key : ∀ (j : Nat) (ev : Event), w' = w.act j ev → MsgFromLeaderLog w' := by
     intro j ev hw
     subst hw
@@ -54,26 +56,49 @@ theorem msgFromLeaderLog_step {members : List Nat} {w w' : World σ κ}
       obtain ⟨p0, hp0⟩ := step_appendEntries_payload hact
       simp only [appendEntriesTo] at hp0
       obtain ⟨htt, _, hpi, hpt, hes, _⟩ := Msg.appendEntries.inj hp0
-      have hni : max 1 (PeerMap.get (Protocol.step (w.nodes src) ev).1.nextIndex p0
+      have hni : max (LogStore.sendFloor (Protocol.step (w.nodes src) ev).1.log)
+          (PeerMap.get (Protocol.step (w.nodes src) ev).1.nextIndex p0
           (LogStore.lastIndex (Protocol.step (w.nodes src) ev).1.log + 1)) = pi + 1 := by
         rw [hpi]
-        have := Nat.le_max_left 1
+        have := Nat.le_max_left (LogStore.sendFloor (Protocol.step (w.nodes src) ev).1.log)
           (PeerMap.get (Protocol.step (w.nodes src) ev).1.nextIndex p0
             (LogStore.lastIndex (Protocol.step (w.nodes src) ev).1.log + 1))
+        have := LogStore.one_le_sendFloor (Protocol.step (w.nodes src) ev).1.log
         omega
-      refine ⟨(Protocol.step (w.nodes src) ev).1.log, ?_, ?_, ?_, ?_⟩
+      have hfloor : LogStore.sendFloor (Protocol.step (w.nodes src) ev).1.log ≤ pi + 1 := by
+        rw [← hni]; exact Nat.le_max_left _ _
+      have hfl : LogStore.firstIndex (Protocol.step (w.nodes src) ev).1.log ≤
+          max (LogStore.sendFloor (Protocol.step (w.nodes src) ev).1.log)
+            (PeerMap.get (Protocol.step (w.nodes src) ev).1.nextIndex p0
+              (LogStore.lastIndex (Protocol.step (w.nodes src) ev).1.log + 1)) :=
+        Nat.le_trans (LogStore.firstIndex_le_sendFloor _) (Nat.le_max_left _ _)
+      refine ⟨fullStep (w.nodes src) (w.full src) ev, ?_, ?_, ?_, ?_⟩
       · rw [act_leaderLogs]
         refine List.mem_append_right _ ?_
         rw [← hterm]
         exact leaderLogOf_self hlead
       · intro n e hn
         rw [hes] at hn
-        have := appendEntriesTo_entries (s := (Protocol.step (w.nodes src) ev).1) (p := p0) hn
-        rwa [hni] at this
+        have h0 := appendEntriesTo_entries (s := (Protocol.step (w.nodes src) ev).1) (p := p0) hn
+        rw [hni] at h0
+        have := full_get_of hr' (i := src) (by rw [act_nodes_self]; exact h0)
+        rwa [act_full_self] at this
       · -- `prevTerm` is read straight off the sender's own log
-        rw [hpt, ← hpi]
+        have hb := full_termAt_getD hr' (i := src) (k := pi) ?_
+        · rw [act_nodes_self, act_full_self] at hb
+          rw [hb, hpt, ← hpi]
+        · rw [act_nodes_self]
+          rcases Nat.eq_zero_or_pos pi with hz | hz
+          · exact Or.inl hz
+          · exact Or.inr (Nat.le_of_lt_succ
+              (LogStore.first_lt_of_sendFloor hfloor (by omega)))
       · -- the payload is the leader's entire tail
-        rw [hes, model_sliceFrom, List.length_drop, hni]
+        have hlen := congrArg List.length
+          (model_sliceFrom (Protocol.step (w.nodes src) ev).1.log _ hfl)
+        simp only [List.length_map, List.length_drop] at hlen
+        have hli := full_lastIndex hr' (i := src)
+        rw [act_nodes_self, act_full_self] at hli
+        rw [hes, hlen, hni, hli]
         simp [LogStore.lastIndex, model_size]
   cases hs with
   | deliver s d m hd hm => exact key d _ rfl
@@ -90,7 +115,7 @@ theorem msgFromLeaderLog_reachable {members : List Nat} {w : World σ κ}
     (h : Reachable members w) : MsgFromLeaderLog w := by
   induction h with
   | init => exact msgFromLeaderLog_init members
-  | tail _ hs ih => exact msgFromLeaderLog_step ih hs
+  | tail hr hs ih => exact msgFromLeaderLog_step hr ih hs
 
 /-! ## Acknowledgements mean agreement -/
 
@@ -103,6 +128,8 @@ theorem step_ack_shape {s : NodeState σ κ} {ev : Event} {to t m : Nat}
       ∧ (Protocol.step s ev).1.log = appendFrom s.log (pi + 1) es
       ∧ pi ≤ LogStore.lastIndex s.log
       ∧ (pi ≠ 0 → LogStore.termAt s.log pi = some pt)
+      ∧ LogStore.firstIndex s.log ≤ pi + 1
+      ∧ Protocol.aeAccepts s t pi pt = true
       ∧ s.currentTerm ≤ t
       ∧ (Protocol.step s ev).1.role = Role.follower := by
   cases ev with
@@ -116,9 +143,9 @@ theorem step_ack_shape {s : NodeState σ κ} {ev : Event} {to t m : Nat}
       | appendEntriesResp a b c => exact absurd h handleAppendEntriesResp_no_aer
       | appendEntries term l pi pt es lc =>
           rw [Protocol.step] at h ⊢
-          obtain ⟨h1, h2, h3, h4, h5, h6, h7⟩ := handleAppendEntries_ack h
+          obtain ⟨h1, h2, h3, h4, h5, h6, h7, h8, h9⟩ := handleAppendEntries_ack h
           subst h1
-          exact ⟨src, l, pi, pt, es, lc, rfl, h2, h3, h4, h5, h6, h7⟩
+          exact ⟨src, l, pi, pt, es, lc, rfl, h2, h3, h4, h5, h6, h7, h8, h9⟩
   | clientReq rid cmd =>
       rw [Protocol.step] at h
       exact absurd h handleClientReq_no_aer
@@ -172,6 +199,8 @@ theorem splice_agrees {members : List Nat} {w : World σ κ}
     ∀ k, k ≤ pi + es.length →
       LogStore.get (appendFrom lgv (pi + 1) es) k = LogStore.get lgS k := by
   have hb : pi + 1 ≤ LogStore.lastIndex lgv + 1 := by omega
+  have hfv := hwfV.nocompact
+  have hfs := hwfS.nocompact
   have hbelow : ∀ k, k ≤ pi → LogStore.get lgv k = LogStore.get lgS k := by
     intro k hk
     rcases Nat.eq_zero_or_pos pi with h0 | h0
@@ -270,24 +299,33 @@ theorem ackAgrees_step {members : List Nat} {w w' : World σ κ}
         rw [act_leaderLogs]
         exact List.mem_append_right _ (leaderLogOf_self hlead)
       subst hvj
-      obtain ⟨src, l, pi, pt, es, lc, hev, hm, hlog, hpi, hchk, _, _⟩ := step_ack_shape hact
+      obtain ⟨src, l, pi, pt, es, lc, hev, hm, hlog, hpi0, hchk0, hfw, hacc, _, _⟩ :=
+        step_ack_shape hact
+      -- cross to the logical log, where the invariant lives
+      have hfull : fullStep (w.nodes v) (w.full v) ev = appendFrom (w.full v) (pi + 1) es := by
+        subst hev; rw [fullStep, if_pos hacc]
+      have hpi : pi ≤ LogStore.lastIndex (w.full v) := by
+        rw [full_lastIndex hr v]; exact hpi0
+      have hchk : pi ≠ 0 → LogStore.termAt (w.full v) pi = some pt :=
+        fun hz => full_termAt hr (hchk0 hz)
+      have hf1 : LogStore.firstIndex (w.full v) = 1 := full_firstIndex hr v
       have hpkt := hdel src (Msg.appendEntries T l pi pt es lc) hev
       obtain ⟨lgL, hL1, hL2, hL3, hL4⟩ := hmsg src v T l pi pt es lc hpkt
       refine ⟨?_, src, lgL, leaderLog_mono hL1, ?_, ?_⟩
       · -- the splice reaches at least as far as was acknowledged
-        have hlgp0 : lgp = appendFrom (w.nodes v).log (pi + 1) es := by
-          rw [hlg]; exact hlog
+        have hlgp0 : lgp = appendFrom (w.full v) (pi + 1) es := by
+          rw [hlg]; exact hfull
         rw [hlgp0]
-        have := appendFrom_lastIndex_ge es (w.nodes v).log (pi + 1) (by omega)
+        have := appendFrom_lastIndex_ge es (w.full v) (pi + 1) (by omega)
         omega
       · -- the payload is the sender's whole tail, so the ack reaches its end
         have hptpos : pi ≤ LogStore.lastIndex lgL := by
           rcases Nat.eq_zero_or_pos pi with h0 | h0
           · omega
           · have hx := hchk (by omega)
-            obtain ⟨x, hxg⟩ : ∃ x, LogStore.get (w.nodes v).log pi = some x := by
+            obtain ⟨x, hxg⟩ : ∃ x, LogStore.get (w.full v) pi = some x := by
               unfold LogStore.termAt at hx
-              cases hq : LogStore.get (w.nodes v).log pi with
+              cases hq : LogStore.get (w.full v) pi with
               | none => rw [hq] at hx; simp at hx
               | some x => exact ⟨x, rfl⟩
             have hxt : x.term = pt := by
@@ -302,19 +340,19 @@ theorem ackAgrees_step {members : List Nat} {w w' : World σ κ}
                 exact ((LogStore.get_isSome_iff lgL pi).mp (by rw [hq]; rfl)).2
         omega
       -- well-formedness of the three logs involved
-      have hwfPre : WellFormedLog w (w.nodes v).log := wf_node hnd hr v
+      have hwfPre : WellFormedLog w (w.full v) := wf_node hnd hr v
       have hwfL : WellFormedLog w lgL := leaderLogWF_reachable hnd hr src T lgL hL1
-      have hbound : pi + 1 ≤ LogStore.lastIndex (w.nodes v).log + 1 := by omega
+      have hbound : pi + 1 ≤ LogStore.lastIndex (w.full v) + 1 := by omega
       -- below the splice point the follower already agreed with the leader
-      have hbelow : ∀ k, k ≤ pi → LogStore.get (w.nodes v).log k = LogStore.get lgL k := by
+      have hbelow : ∀ k, k ≤ pi → LogStore.get (w.full v) k = LogStore.get lgL k := by
         intro k hk
         rcases Nat.eq_zero_or_pos pi with h0 | h0
         · have : k = 0 := by omega
           subst this; simp
         · have hx := hchk (by omega)
-          obtain ⟨x, hxg⟩ : ∃ x, LogStore.get (w.nodes v).log pi = some x := by
+          obtain ⟨x, hxg⟩ : ∃ x, LogStore.get (w.full v) pi = some x := by
             unfold LogStore.termAt at hx
-            cases hq : LogStore.get (w.nodes v).log pi with
+            cases hq : LogStore.get (w.full v) pi with
             | none => rw [hq] at hx; simp at hx
             | some x => exact ⟨x, rfl⟩
           have hxt : x.term = pt := by
@@ -332,7 +370,7 @@ theorem ackAgrees_step {members : List Nat} {w w' : World σ κ}
             unfold LogStore.termAt at hL3; rw [hyg] at hL3; simpa using hL3
           have hxy : x = y := wf_entry_unique hnd hr hwfPre hwfL hxg hyg (by rw [hxt, hyt])
           exact wf_matching hnd hr hwfPre hwfL hxg (hxy ▸ hyg) k hk
-      have hlgp : lgp = appendFrom (w.nodes v).log (pi + 1) es := by rw [hlg]; exact hlog
+      have hlgp : lgp = appendFrom (w.full v) (pi + 1) es := by rw [hlg]; exact hfull
       intro k hk
       rw [hlgp]
       by_cases hlow : k ≤ pi
@@ -342,23 +380,23 @@ theorem ackAgrees_step {members : List Nat} {w w' : World σ κ}
         have hn : k - (pi + 1) < es.length := by omega
         obtain ⟨en, hen⟩ : ∃ en, es[k - (pi + 1)]? = some en :=
           ⟨es[k - (pi + 1)], List.getElem?_eq_getElem hn⟩
-        have hterm := appendFrom_termAt es (w.nodes v).log (pi + 1) (k - (pi + 1)) en
+        have hterm := appendFrom_termAt es (w.full v) (pi + 1) (k - (pi + 1)) en
           hbound (by omega) hen
         rw [show pi + 1 + (k - (pi + 1)) = k by omega] at hterm
         have hLk : LogStore.get lgL k = some en := by
           have := hL2 (k - (pi + 1)) en hen
           rwa [show pi + 1 + (k - (pi + 1)) = k by omega] at this
-        obtain ⟨z, hzg⟩ : ∃ z, LogStore.get (appendFrom (w.nodes v).log (pi + 1) es) k = some z := by
+        obtain ⟨z, hzg⟩ : ∃ z, LogStore.get (appendFrom (w.full v) (pi + 1) es) k = some z := by
           unfold LogStore.termAt at hterm
-          cases hq : LogStore.get (appendFrom (w.nodes v).log (pi + 1) es) k with
+          cases hq : LogStore.get (appendFrom (w.full v) (pi + 1) es) k with
           | none => rw [hq] at hterm; simp at hterm
           | some z => exact ⟨z, rfl⟩
         have hzt : z.term = en.term := by
           unfold LogStore.termAt at hterm; rw [hzg] at hterm; simpa using hterm
-        have hwfNew : WellFormedLog (w.act v ev) (appendFrom (w.nodes v).log (pi + 1) es) := by
+        have hwfNew : WellFormedLog (w.act v ev) (appendFrom (w.full v) (pi + 1) es) := by
           have h0 := wf_node hnd hr' v
-          rw [act_nodes_self] at h0
-          rwa [hlog] at h0
+          rw [act_full_self] at h0
+          rwa [hfull] at h0
         have hwfL' : WellFormedLog (w.act v ev) lgL := hwfL.mono
         have : z = en := wf_entry_unique hnd hr' hwfNew hwfL' hzg hLk hzt
         rw [hzg, hLk, this]
@@ -397,7 +435,9 @@ theorem commitIsLeaderLog_init (members : List Nat) :
   intro L T c lg Q h; simp [World.init] at h
 
 theorem commitIsLeaderLog_step {members : List Nat} {w w' : World σ κ}
-    (h : CommitIsLeaderLog w) (hs : Step members w w') : CommitIsLeaderLog w' := by
+    (hr : Reachable members w) (h : CommitIsLeaderLog w) (hs : Step members w w') :
+    CommitIsLeaderLog w' := by
+  have hr' : Reachable members w' := Reachable.tail hr hs
   have key : ∀ (j : Nat) (ev : Event), w' = w.act j ev → CommitIsLeaderLog w' := by
     intro j ev hw
     subst hw
@@ -414,7 +454,10 @@ theorem commitIsLeaderLog_step {members : List Nat} {w w' : World σ κ}
         exact leaderLogOf_self hlead
       · -- the committed index carries the leader's own term, by the commit rule
         rw [h3, h4, h2]
-        exact commit_term_of_step hlead hadv
+        have hb := commit_term_of_step (s := w.nodes L) (ev := ev) hlead hadv
+        have hbb := full_termAt hr' (i := L) (k := (Protocol.step (w.nodes L) ev).1.commitIndex)
+          (by rw [act_nodes_self]; exact hb)
+        rwa [act_full_self] at hbb
   cases hs with
   | deliver s d m hd hm => exact key d _ rfl
   | electionTimeout k hk => exact key k _ rfl
@@ -430,7 +473,7 @@ theorem commitIsLeaderLog_reachable {members : List Nat} {w : World σ κ}
     (h : Reachable members w) : CommitIsLeaderLog w := by
   induction h with
   | init => exact commitIsLeaderLog_init members
-  | tail _ hs ih => exact commitIsLeaderLog_step ih hs
+  | tail hr hs ih => exact commitIsLeaderLog_step hr ih hs
 
 /--
 **Durable commit evidence.**

@@ -375,10 +375,6 @@ theorem handleAppendEntries_accepts (s : NodeState σ κ)
     rw [if_neg (by simp [hlt])]
   · rename_i hlt
     dsimp only
-    rw [aeConsistent_congr (a := { (maybeStepDown s term (some leaderId)).1 with
-      role := .follower, leaderHint := some leaderId,
-      votedFor := some ((maybeStepDown s term (some leaderId)).1.votedFor.getD leaderId) })
-      (b := s) hmsd prevIdx prevTerm]
     cases hac : aeConsistent s prevIdx prevTerm
     · simp [hac, hmsd]
     · simp [hac, hlt, hmsd, applyCommitted_log]
