@@ -78,6 +78,18 @@ structure World (σ κ : Type) where
   voteLogs : List (Nat × Nat × σ)
   /-- Ghost: `(node, term, log)` snapshot taken at every step at which a node leads. -/
   leaderLogs : List (Nat × Nat × σ)
+  /--
+  Ghost: everything a snapshot a leader might ship would be about, recorded at
+  every step at which a node leads — `(node, term, snapshot index, the state
+  machine as bindings, logical log)`.
+
+  A follower that installs a snapshot ends up holding a prefix of the sender's
+  log and a state machine it did not compute. Neither is a function of the
+  receiver, so the model has to name the sender's side of it; this is that
+  record, and it is immutable once written, which is what keeps the argument
+  from depending on where the sender has got to since.
+  -/
+  snapLogs : List (Nat × Nat × Nat × List (String × String) × σ)
   /-- Ghost: the number of steps taken so far — the model's clock. -/
   clock : Nat
   /-- Ghost: the client-visible history, in real-time (that is, step) order. -/
@@ -120,7 +132,7 @@ accepted `AppendEntries` splices, and nothing else touches the log.
 `aeAccepts` is the very condition `handleAppendEntries` branches on, so the two
 cannot drift.
 -/
-def fullStep (s : NodeState σ κ) (fl : σ) (ev : Event) : σ :=
+def nodeFullStep (s : NodeState σ κ) (fl : σ) (ev : Event) : σ :=
   match ev with
   | .clientReq rid cmd =>
       if s.role = Role.leader then
@@ -129,6 +141,47 @@ def fullStep (s : NodeState σ κ) (fl : σ) (ev : Event) : σ :=
   | .recv _ (.appendEntries term _ prevIdx prevTerm es _) =>
       if Protocol.aeAccepts s term prevIdx prevTerm then appendFrom fl (prevIdx + 1) es else fl
   | _ => fl
+
+/--
+Ghost: the sender's recorded log that a snapshot's anchor pins down.
+
+A follower that installs a snapshot ends up holding a prefix of the *sender's*
+log — a value no function of the receiver can produce. `snapLogs` records that
+log at the moment the leader could have shipped it, and this picks the record
+the message's anchor identifies. `Proof.fullBridge` carries the invariant that
+for a snapshot actually on the wire there always is one, so the fallback is
+never taken on a reachable path.
+-/
+noncomputable def snapSource (w : World σ κ) (src term lastIdx : Nat) (anchor : Entry)
+    (pairs : List (String × String)) : σ :=
+  open Classical in
+  if h : ∃ lg : σ, (src, term, lastIdx, pairs, lg) ∈ w.snapLogs
+      ∧ LogStore.get lg lastIdx = some anchor then h.choose else w.full src
+
+/--
+Ghost: how node `i`'s logical log evolves when it handles `ev`.
+
+For everything but a snapshot this is `nodeFullStep` — the same operation the
+node performs on its own log, applied to a log that has never discarded
+anything. A snapshot is the exception: the receiver's log becomes a prefix of
+the *sender's*, so this case has to reach into the world for it.
+-/
+noncomputable def fullStep (w : World σ κ) (i : Nat) (ev : Event) : σ :=
+  match ev with
+  | .recv src (.installSnapshot term _ lastIdx anchor pairs) =>
+      if Protocol.snapInstalls (w.nodes i) term lastIdx anchor then
+        LogStore.truncFrom (snapSource w src term lastIdx anchor pairs) (lastIdx + 1)
+      else w.full i
+  | ev => nodeFullStep (w.nodes i) (w.full i) ev
+
+/-- Away from snapshots, the logical log takes the node's own operation. -/
+theorem fullStep_node (w : World σ κ) (i : Nat) (ev : Event) (h : ev.isSnapRecv = false) :
+    fullStep w i ev = nodeFullStep (w.nodes i) (w.full i) ev := by
+  cases ev with
+  | recv src m => cases m <;> first | rfl | exact absurd h (by simp [Event.isSnapRecv])
+  | clientReq _ _ => rfl
+  | electionTimeout => rfl
+  | heartbeatTimeout => rfl
 
 /-- Ghost: the entry node `i` mints while handling `ev`, if any. -/
 def createdOf (i : Nat) (s : NodeState σ κ) (fl : σ) (ev : Event) : List (Nat × Nat × Entry) :=
@@ -226,6 +279,18 @@ prefix, and any one of them can stand for "what that leader had".
 def leaderLogOf (i : Nat) (s : NodeState σ κ) (fl : σ) : List (Nat × Nat × σ) :=
   if s.role = Role.leader then [(i, s.currentTerm, fl)] else []
 
+/--
+Ghost: the snapshot node `i` would ship, recorded whenever it leads.
+
+Recorded at every leading step, exactly as `leaderLogOf` is, so that a snapshot
+put on the wire always has a matching record — see `Proof.snapProvenance`.
+-/
+def snapLogOf (i : Nat) (s : NodeState σ κ) (fl : σ) :
+    List (Nat × Nat × Nat × List (String × String) × σ) :=
+  if s.role = Role.leader then
+    [(i, s.currentTerm, s.snapIndex, KVStore.toPairs s.snapKV, fl)]
+  else []
+
 /-- Ghost: the vote node `i` holds in state `s`, if any. -/
 def voteOf (i : Nat) (s : NodeState σ κ) : List (Nat × Nat × Nat) :=
   match s.votedFor with
@@ -260,9 +325,9 @@ def commitTimeOf (i : Nat) (pre post : NodeState σ κ) (fl : σ) (t : Nat) :
   (commitOf i pre post fl).map (fun r => (r.2.2.1, r.2.2.2.1, t))
 
 /-- Deliver `ev` to node `i`, recording whatever it transmits and votes. -/
-def World.act (w : World σ κ) (i : Nat) (ev : Event) : World σ κ :=
+noncomputable def World.act (w : World σ κ) (i : Nat) (ev : Event) : World σ κ :=
   let (s', acts) := Protocol.step (w.nodes i) ev
-  let fl := fullStep (w.nodes i) (w.full i) ev
+  let fl := fullStep w i ev
   { nodes := fun j => if j = i then s' else w.nodes j,
     full := fun j => if j = i then fl else w.full j,
     sent := w.sent ++ sendsOf i acts,
@@ -275,6 +340,7 @@ def World.act (w : World σ κ) (i : Nat) (ev : Event) : World σ κ :=
     acks := w.acks ++ ackOf i s' fl acts,
     voteLogs := w.voteLogs ++ voteLogOf i s' fl acts,
     leaderLogs := w.leaderLogs ++ leaderLogOf i s' fl,
+    snapLogs := w.snapLogs ++ snapLogOf i s' fl,
     clock := w.clock + 1,
     hist := w.hist ++ histOf i ev acts w.clock,
     createTime := w.createTime ++ createTimeOf i s' fl ev w.clock,
@@ -308,7 +374,7 @@ def World.compactAt (w : World σ κ) (i : Nat) : World σ κ :=
 def World.init (members : List Nat) : World σ κ :=
   { nodes := fun i => Protocol.initState { me := i, members := members },
     sent := [], votes := [], led := [], created := [], chain := [], elected := [],
-    commits := [], acks := [], voteLogs := [], leaderLogs := [],
+    commits := [], acks := [], voteLogs := [], leaderLogs := [], snapLogs := [],
     clock := 0, hist := [], full := fun _ => LogStore.empty,
     createTime := [], commitTime := [] }
 
@@ -361,6 +427,8 @@ inductive Step (members : List Nat) : World σ κ → World σ κ → Prop where
     (w.crash i).voteLogs = w.voteLogs := rfl
 @[simp] theorem crash_leaderLogs (w : World σ κ) (i : Nat) :
     (w.crash i).leaderLogs = w.leaderLogs := rfl
+@[simp] theorem crash_snapLogs (w : World σ κ) (i : Nat) :
+    (w.crash i).snapLogs = w.snapLogs := rfl
 @[simp] theorem crash_hist (w : World σ κ) (i : Nat) : (w.crash i).hist = w.hist := rfl
 @[simp] theorem crash_createTime (w : World σ κ) (i : Nat) :
     (w.crash i).createTime = w.createTime := rfl
@@ -392,6 +460,8 @@ inductive Step (members : List Nat) : World σ κ → World σ κ → Prop where
     (w.compactAt i).voteLogs = w.voteLogs := rfl
 @[simp] theorem compactAt_leaderLogs (w : World σ κ) (i : Nat) :
     (w.compactAt i).leaderLogs = w.leaderLogs := rfl
+@[simp] theorem compactAt_snapLogs (w : World σ κ) (i : Nat) :
+    (w.compactAt i).snapLogs = w.snapLogs := rfl
 @[simp] theorem compactAt_hist (w : World σ κ) (i : Nat) : (w.compactAt i).hist = w.hist := rfl
 @[simp] theorem compactAt_createTime (w : World σ κ) (i : Nat) :
     (w.compactAt i).createTime = w.createTime := rfl

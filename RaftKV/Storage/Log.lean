@@ -59,6 +59,15 @@ class LogStore (σ : Type) where
   firstIndex : σ → Nat
   /-- Discard every entry strictly below `i`. The entry at `i` is kept as the anchor. -/
   compact : σ → Nat → σ
+  /--
+  The log holding exactly `e` at index `i` and nothing else — everything below
+  `i` discarded, nothing above it yet.
+
+  This is what a node installs when it accepts a snapshot: it has no entries of
+  its own to keep, but it must still hold the anchor the consistency check will
+  be run against, so that ordinary replication can resume from `i + 1`.
+  -/
+  fromAnchor : Nat → Entry → σ
 
 /--
 The refinement mapping from a log implementation to its mathematical model,
@@ -111,10 +120,17 @@ class LawfulLogStore (σ : Type) [LogStore σ] where
   first_compact : ∀ (s : σ) (i : Nat),
     LogStore.firstIndex s ≤ i → i ≤ LogStore.size s →
     LogStore.firstIndex (LogStore.compact s i) = i
+  /-- An installed anchor is a hole prefix and one entry. -/
+  model_fromAnchor : ∀ (i : Nat) (e : Entry),
+    toModel (LogStore.fromAnchor i e : σ) = List.replicate (i - 1) none ++ [some e]
+  /-- ...and its window starts exactly at the anchor. -/
+  first_fromAnchor : ∀ (i : Nat) (e : Entry),
+    LogStore.firstIndex (LogStore.fromAnchor i e : σ) = max 1 i
 
 export LawfulLogStore (toModel model_empty model_append model_get model_truncFrom
   model_size model_sliceFrom model_compact first_pos get_lt_first get_isSome
-  first_empty first_append first_truncFrom first_compact)
+  first_empty first_append first_truncFrom first_compact model_fromAnchor
+  first_fromAnchor)
 
 attribute [simp] model_empty model_append model_size first_empty first_append
 
@@ -374,6 +390,46 @@ theorem get_compact_of_le (s : σ) (i k : Nat) (h1 : firstIndex s ≤ i) (h2 : i
 /-- And the window starts exactly where we compacted to. -/
 theorem firstIndex_compact (s : σ) (i : Nat) (h1 : firstIndex s ≤ i) (h2 : i ≤ lastIndex s) :
     firstIndex (compact s i) = i := first_compact s i h1 h2
+
+/-! ### The installed anchor -/
+
+/-- Its window starts at the anchor. -/
+@[simp] theorem firstIndex_fromAnchor (i : Nat) (e : Entry) :
+    firstIndex (fromAnchor i e : σ) = max 1 i := LawfulLogStore.first_fromAnchor i e
+
+/-- And it reaches exactly that far. -/
+@[simp] theorem size_fromAnchor (i : Nat) (e : Entry) :
+    size (fromAnchor i e : σ) = max 1 i := by
+  rw [LawfulLogStore.model_size, LawfulLogStore.model_fromAnchor]
+  simp
+  omega
+
+@[simp] theorem lastIndex_fromAnchor (i : Nat) (e : Entry) :
+    lastIndex (fromAnchor i e : σ) = max 1 i := size_fromAnchor i e
+
+/-- It holds the anchor, and nothing else. -/
+theorem get_fromAnchor (i : Nat) (e : Entry) (k : Nat) :
+    get (fromAnchor i e : σ) k = if k = max 1 i then some e else none := by
+  rw [LawfulLogStore.model_get, LawfulLogStore.model_fromAnchor]
+  by_cases hk : k = 0
+  · subst hk; rw [if_pos rfl, if_neg (by omega)]
+  · rw [if_neg hk]
+    have hlen : (List.replicate (i - 1) (none : Option Entry)).length = i - 1 :=
+      List.length_replicate ..
+    by_cases hlt : k - 1 < i - 1
+    · rw [List.getElem?_append_left (by omega), List.getElem?_replicate, if_pos (by omega),
+        if_neg (by omega)]
+      rfl
+    · rw [List.getElem?_append_right (by omega), hlen]
+      by_cases he : k = max 1 i
+      · rw [if_pos he]
+        have : k - 1 - (i - 1) = 0 := by omega
+        rw [this]
+        rfl
+      · rw [if_neg he]
+        have : k - 1 - (i - 1) ≠ 0 := by omega
+        rw [List.getElem?_eq_none (by simp; omega)]
+        rfl
 
 end LogStore
 

@@ -25,7 +25,7 @@ variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 
 theorem act_elected (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).elected
-      = w.elected ++ electedOf j (w.nodes j) (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) := rfl
+      = w.elected ++ electedOf j (w.nodes j) (Protocol.step (w.nodes j) ev).1 (fullStep w j ev) := rfl
 
 theorem mem_electedOf {i j t : Nat} {lg : σ} {pre post : NodeState σ κ} {fl : σ}
     (h : (i, t, lg) ∈ electedOf j pre post fl) :

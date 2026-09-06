@@ -40,6 +40,29 @@ theorem broadcastAppend_shape {s : NodeState σ κ} {to : Nat} {m : Msg}
   unfold appendEntriesTo
   exact ⟨_, _, _, _, _, _, rfl⟩
 
+/--
+`retryTo` sends only a snapshot and an `appendEntries`, both to the same peer.
+
+This is the one lemma every "which messages can this handler emit" argument
+needs about the back-off path, snapshot shipping included.
+-/
+theorem retryTo_shape {s : NodeState σ κ} {peer : Nat} {b : Bool} {to : Nat} {m : Msg}
+    (h : Action.send to m ∈ retryTo s peer b) :
+    to = peer ∧ (m = snapshotMsg s ∨ m = appendEntriesTo s peer) := by
+  unfold retryTo at h
+  split at h
+  · rcases List.mem_cons.mp h with h' | h'
+    · exact ⟨(Action.send.inj h').1, Or.inl (Action.send.inj h').2⟩
+    · rcases List.mem_singleton.mp h' with h''
+      exact ⟨(Action.send.inj h'').1, Or.inr (Action.send.inj h'').2⟩
+  · rcases List.mem_singleton.mp h with h'
+    exact ⟨(Action.send.inj h').1, Or.inr (Action.send.inj h').2⟩
+
+/-- A snapshot message is an `installSnapshot`, by definition. -/
+theorem snapshotMsg_shape (s : NodeState σ κ) :
+    ∃ t l li a ps, snapshotMsg s = Msg.installSnapshot t l li a ps :=
+  ⟨_, _, _, _, _, rfl⟩
+
 /-- Actions from a step-down are never sends. -/
 theorem stepDown_no_send {s : NodeState σ κ} {t : Nat} {hint : Option Nat}
     {to : Nat} {m : Msg} : Action.send to m ∉ (stepDown s t hint).2 := by
@@ -54,6 +77,17 @@ theorem maybeStepDown_no_send {s : NodeState σ κ} {t : Nat} {hint : Option Nat
   split
   · exact stepDown_no_send
   · simp
+
+/-- The snapshot handler sends nothing at all: it only acknowledges by acting. -/
+theorem handleInstallSnapshot_no_send {s : NodeState σ κ}
+    {term leaderId lastIdx : Nat} {a : Entry} {ps : List (String × String)}
+    {to : Nat} {m : Msg} :
+    Action.send to m ∉ (handleInstallSnapshot s term leaderId lastIdx a ps).2 := by
+  rw [handleInstallSnapshot]
+  split
+  · simp
+  · dsimp only
+    split <;> exact maybeStepDown_no_send
 
 /-- Applying committed entries emits only client replies. -/
 theorem applyOne_no_send {s : NodeState σ κ} {to : Nat} {m : Msg} :
@@ -145,10 +179,8 @@ theorem handleAppendEntriesResp_no_grant {s : NodeState σ κ}
       · exact applyCommitted_no_send
       · dsimp only
         intro h
-        have := List.mem_singleton.mp h
-        rcases appendEntriesTo_shape { s with nextIndex := _ } src with ⟨_, _, _, _, _, _, heq⟩
-        rw [heq] at this
-        exact Msg.noConfusion (Action.send.inj this).2
+        rcases (retryTo_shape h).2 with h' | h' <;>
+          exact absurd h' (by simp [snapshotMsg, appendEntriesTo])
 
 theorem handleClientReq_no_grant {s : NodeState σ κ} {rid : Nat} {c : Command} {to t : Nat} :
     Action.send to (Msg.requestVoteResp t true) ∉ (handleClientReq s rid c).2 := by
@@ -277,10 +309,8 @@ theorem handleAppendEntriesResp_no_rv {s : NodeState σ κ}
       · exact applyCommitted_no_send
       · dsimp only
         intro h
-        have := List.mem_singleton.mp h
-        rcases appendEntriesTo_shape { s with nextIndex := _ } src with ⟨_, _, _, _, _, _, heq⟩
-        rw [heq] at this
-        exact Msg.noConfusion (Action.send.inj this).2
+        rcases (retryTo_shape h).2 with h' | h' <;>
+          exact absurd h' (by simp [snapshotMsg, appendEntriesTo])
 
 theorem handleClientReq_no_rv {s : NodeState σ κ} {rid : Nat} {cmd : Command}
     {to t c li lt : Nat} :
@@ -328,6 +358,7 @@ theorem step_requestVote_log {s : NodeState σ κ} {ev : Event} {to U cid li lt 
       | requestVoteResp a b => exact absurd h handleRequestVoteResp_no_rv
       | appendEntries a b c d e f => exact absurd h handleAppendEntries_no_rv
       | appendEntriesResp a b c => exact absurd h handleAppendEntriesResp_no_rv
+      | installSnapshot a b c d e => exact absurd h handleInstallSnapshot_no_send
   | clientReq rid cmd => exact absurd h handleClientReq_no_rv
   | electionTimeout =>
       rw [Protocol.step] at h ⊢
@@ -370,6 +401,7 @@ theorem step_requestVote_cid {s : NodeState σ κ} {ev : Event} {to t c li lt : 
       | requestVoteResp a b => exact absurd h handleRequestVoteResp_no_rv
       | appendEntries a b d e f g => exact absurd h handleAppendEntries_no_rv
       | appendEntriesResp a b d => exact absurd h handleAppendEntriesResp_no_rv
+      | installSnapshot a b c d e => exact absurd h handleInstallSnapshot_no_send
   | clientReq rid cmd => exact absurd h handleClientReq_no_rv
   | electionTimeout =>
       rw [Protocol.step] at h
@@ -416,10 +448,8 @@ theorem handleAppendEntriesResp_no_aer {s : NodeState σ κ}
       · exact applyCommitted_no_send
       · dsimp only
         intro h
-        have := List.mem_singleton.mp h
-        rcases appendEntriesTo_shape { s with nextIndex := _ } src with ⟨_, _, _, _, _, _, heq⟩
-        rw [heq] at this
-        exact Msg.noConfusion (Action.send.inj this).2
+        rcases (retryTo_shape h).2 with h' | h' <;>
+          exact absurd h' (by simp [snapshotMsg, appendEntriesTo])
 
 theorem handleClientReq_no_aer {s : NodeState σ κ} {rid : Nat} {cmd : Command}
     {to t m : Nat} {ok : Bool} :
@@ -460,6 +490,7 @@ theorem grant_only_from_requestVote {s : NodeState σ κ} {ev : Event} {to t : N
       | requestVoteResp a b => exact absurd h handleRequestVoteResp_no_grant
       | appendEntries a b c d e f => exact absurd h handleAppendEntries_no_grant
       | appendEntriesResp a b c => exact absurd h handleAppendEntriesResp_no_grant
+      | installSnapshot a b c d e => exact absurd h handleInstallSnapshot_no_send
   | clientReq rid c => exact absurd h handleClientReq_no_grant
   | electionTimeout =>
       rw [Protocol.step] at h

@@ -25,7 +25,9 @@ variable {σ κ : Type} [LogStore σ] [KVStore κ]
 theorem step_leader_demote {s : NodeState σ κ} {ev : Event}
     (hl : s.role = Role.leader)
     (hne : ∀ src t l pi pt es lc,
-      ev = Event.recv src (Msg.appendEntries t l pi pt es lc) → t ≠ s.currentTerm) :
+      ev = Event.recv src (Msg.appendEntries t l pi pt es lc) → t ≠ s.currentTerm)
+    (hns : ∀ src t l li a ps,
+      ev = Event.recv src (Msg.installSnapshot t l li a ps) → t ≠ s.currentTerm) :
     ((Protocol.step s ev).1.role = Role.leader
         ∧ (Protocol.step s ev).1.currentTerm = s.currentTerm)
       ∨ s.currentTerm < (Protocol.step s ev).1.currentTerm := by
@@ -68,7 +70,20 @@ theorem step_leader_demote {s : NodeState σ κ} {ev : Event}
             by_cases hguard : s.role != Role.leader || term != s.currentTerm
             · rw [if_pos hguard]; exact ⟨hl, rfl⟩
             · rw [if_neg hguard]
-              split <;> exact ⟨by simpa using hl, by simp⟩
+              split
+              · exact ⟨by simpa using hl, by simp⟩
+              · exact ⟨by simpa using hl, by simp⟩
+      | installSnapshot term lid li a ps =>
+          -- a same-term snapshot cannot exist for the same reason a same-term
+          -- `AppendEntries` cannot: it would have to come from this very leader
+          by_cases hgt : term > s.currentTerm
+          · right; rw [Protocol.step, handleInstallSnapshot_term_eq]; omega
+          · by_cases hlt : term < s.currentTerm
+            · left
+              rw [Protocol.step, handleInstallSnapshot_stale s term lid li a ps hlt]
+              exact ⟨hl, rfl⟩
+            · exfalso
+              exact hns src term lid li a ps rfl (by omega)
   | clientReq rid cmd =>
       left
       rw [Protocol.step, handleClientReq, if_neg (by rw [hl]; simp)]
@@ -99,6 +114,13 @@ theorem step_candidate_term (s : NodeState σ κ) (ev : Event)
   cases ev with
   | recv src m =>
       cases m with
+      | installSnapshot term lid li a ps =>
+          left
+          by_cases hlt : term < s.currentTerm
+          · rw [Protocol.step, handleInstallSnapshot_stale s term lid li a ps hlt] at h
+            exact h
+          · rw [Protocol.step, handleInstallSnapshot_follower s term lid li a ps hlt] at h
+            exact absurd h (by simp)
       | requestVote term candId li lt =>
           by_cases hgt : term > s.currentTerm
           · right; rw [Protocol.step, handleRequestVote_term_eq]; omega
@@ -193,35 +215,52 @@ theorem leader_stable {members : List Nat} {w w' : World σ κ} [LawfulLogStore 
     have hwin : WonTerm members w src t := hp.aeWinner src i t l pi pt es lc hmem
     have hself : i = src := leader_is_unique_winner hnd hr hl hteq.symm hwin
     exact hp.notSelf (src, i, Msg.appendEntries t l pi pt es lc) hmem (by simp [hself])
+  have hnos : ∀ src t l li (a : Entry) (ps : List (String × String)),
+      (src, i, Msg.installSnapshot t l li a ps) ∈ w.sent → t ≠ (w.nodes i).currentTerm := by
+    intro src t l li a ps hmem hteq
+    have hwin : WonTerm members w src t := hp.snapWinner src i t l li a ps hmem
+    have hself : i = src := leader_is_unique_winner hnd hr hl hteq.symm hwin
+    exact hp.notSelf (src, i, Msg.installSnapshot t l li a ps) hmem (by simp [hself])
   cases hs with
   | deliver s d m hd hmem =>
       by_cases hij : i = d
       · subst hij
         rw [act_nodes_self]
-        refine Or.imp id Or.inl (step_leader_demote hl ?_)
-        intro src t l pi pt es lc heq
-        have h1 : s = src := (Event.recv.inj heq).1
-        have h2 : m = Msg.appendEntries t l pi pt es lc := (Event.recv.inj heq).2
-        subst h2; subst h1
-        exact hno _ t l pi pt es lc hmem
+        refine Or.imp id Or.inl (step_leader_demote hl ?_ ?_)
+        · intro src t l pi pt es lc heq
+          have h1 : s = src := (Event.recv.inj heq).1
+          have h2 : m = Msg.appendEntries t l pi pt es lc := (Event.recv.inj heq).2
+          subst h2; subst h1
+          exact hno _ t l pi pt es lc hmem
+        · intro src t l li a ps heq
+          have h1 : s = src := (Event.recv.inj heq).1
+          have h2 : m = Msg.installSnapshot t l li a ps := (Event.recv.inj heq).2
+          subst h2; subst h1
+          exact hnos _ t l li a ps hmem
       · rw [act_nodes_ne _ _ _ hij]; exact Or.inl ⟨hl, rfl⟩
   | electionTimeout k _ =>
       by_cases hij : i = k
       · subst hij
         rw [act_nodes_self]
-        exact Or.imp id Or.inl (step_leader_demote hl (fun _ _ _ _ _ _ _ hq => Event.noConfusion hq))
+        exact Or.imp id Or.inl (step_leader_demote hl
+          (fun _ _ _ _ _ _ _ hq => Event.noConfusion hq)
+          (fun _ _ _ _ _ _ hq => Event.noConfusion hq))
       · rw [act_nodes_ne _ _ _ hij]; exact Or.inl ⟨hl, rfl⟩
   | heartbeat k _ =>
       by_cases hij : i = k
       · subst hij
         rw [act_nodes_self]
-        exact Or.imp id Or.inl (step_leader_demote hl (fun _ _ _ _ _ _ _ hq => Event.noConfusion hq))
+        exact Or.imp id Or.inl (step_leader_demote hl
+          (fun _ _ _ _ _ _ _ hq => Event.noConfusion hq)
+          (fun _ _ _ _ _ _ hq => Event.noConfusion hq))
       · rw [act_nodes_ne _ _ _ hij]; exact Or.inl ⟨hl, rfl⟩
   | client k rid cmd _ =>
       by_cases hij : i = k
       · subst hij
         rw [act_nodes_self]
-        exact Or.imp id Or.inl (step_leader_demote hl (fun _ _ _ _ _ _ _ hq => Event.noConfusion hq))
+        exact Or.imp id Or.inl (step_leader_demote hl
+          (fun _ _ _ _ _ _ _ hq => Event.noConfusion hq)
+          (fun _ _ _ _ _ _ hq => Event.noConfusion hq))
       · rw [act_nodes_ne _ _ _ hij]; exact Or.inl ⟨hl, rfl⟩
   | crash k _ =>
       by_cases hij : i = k

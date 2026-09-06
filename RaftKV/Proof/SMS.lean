@@ -316,12 +316,12 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
               (by rw [act_nodes_self]; exact hct0)
             rw [act_full_self] at hct
             unfold LogStore.termAt at hct
-            cases hq : LogStore.get (fullStep (w.nodes i) (w.full i) ev)
+            cases hq : LogStore.get (fullStep w i ev)
                 (Protocol.step (w.nodes i) ev).1.commitIndex with
             | none => rw [hq] at hct; simp at hct
             | some z => exact ((LogStore.get_isSome_iff _ _).mp (by rw [hq]; rfl)).2
           · have hlen : LogStore.lastIndex (w.full i)
-                ≤ LogStore.lastIndex (fullStep (w.nodes i) (w.full i) ev) := by
+                ≤ LogStore.lastIndex (fullStep w i ev) := by
               rcases full_step (w.nodes i) (w.full i) ev with hl | ⟨rid, cmd, _, _, hl⟩ |
                 ⟨src, term, l, pi, pt, es, lc, hev, _⟩
               · rw [hl]; exact Nat.le_refl _
@@ -401,12 +401,12 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
               · exact absurd ⟨src, term, l, pi, pt, es, lc, hev⟩ hae
             refine ⟨(Protocol.step (w.nodes i) ev).1.currentTerm, ?_, Nat.le_refl _⟩
             exact ⟨i, (Protocol.step (w.nodes i) ev).1.commitIndex,
-              fullStep (w.nodes i) (w.full i) ev,
+              fullStep w i ev,
               replicatedOn (Protocol.step (w.nodes i) ev).1
                 (Protocol.step (w.nodes i) ev).1.commitIndex,
               List.mem_append_right _ (mem_commitOf_self hlead hadv), hk, hget⟩
           · have hk' : k ≤ (w.nodes i).commitIndex := by omega
-            have hunch : LogStore.get (fullStep (w.nodes i) (w.full i) ev) k
+            have hunch : LogStore.get (fullStep w i ev) k
                 = LogStore.get (w.full i) k := by
               rcases full_step (w.nodes i) (w.full i) ev with hl | ⟨rid, cmd, _, _, hl⟩ |
                 ⟨src, term, l, pi, pt, es, lc, hev, _⟩
@@ -457,7 +457,7 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
             (PeerMap.get (Protocol.step (w.nodes src) ev).1.nextIndex p0
               (LogStore.lastIndex (Protocol.step (w.nodes src) ev).1.log + 1)) :=
         Nat.le_trans (LogStore.firstIndex_le_sendFloor _) (Nat.le_max_left _ _)
-      refine ⟨fullStep (w.nodes src) (w.full src) ev, ?_, ?_, ?_, ?_, ?_, ?_⟩
+      refine ⟨fullStep w src ev, ?_, ?_, ?_, ?_, ?_, ?_⟩
       · rw [act_leaderLogs]
         exact List.mem_append_right _ (hterm ▸ leaderLogOf_self hlead)
       · have hb := hcb src
@@ -580,7 +580,7 @@ theorem step_log_below_applied {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (hr : Reachable members w) {j : Nat} {ev : Event}
     (hdel : ∀ src m', ev = Event.recv src m' → (src, j, m') ∈ w.sent) :
     ∀ k, k ≤ (w.nodes j).lastApplied →
-      LogStore.get (fullStep (w.nodes j) (w.full j) ev) k = LogStore.get (w.full j) k := by
+      LogStore.get (fullStep w j ev) k = LogStore.get (w.full j) k := by
   have hsi := sInv_reachable hnd hr
   have hab := appliedBound_reachable hr
   intro k hk

@@ -495,9 +495,12 @@ theorem appendFrom_firstIndex : ∀ (es : List Entry) (lg : σ) (startIdx : Nat)
         rw [ih _ (startIdx + 1) (by rw [LawfulLogStore.first_append]; omega),
           LawfulLogStore.first_append]
 
-/-- No handler touches the snapshot: only compaction does. -/
+/--
+No handler but the snapshot installer touches the snapshot; otherwise only
+compaction moves it.
+-/
 theorem step_snapIndex {σ' : Type} [LogStore σ'] {κ' : Type} [KVStore κ']
-    (s : NodeState σ' κ') (ev : Event) :
+    (s : NodeState σ' κ') (ev : Event) (hev : ev.isSnapRecv = false) :
     (Protocol.step s ev).1.snapIndex = s.snapIndex := by
   have hmsd : ∀ t v, (maybeStepDown s t v).1.snapIndex = s.snapIndex := by
     intro t v; rw [maybeStepDown]; split <;> rfl
@@ -533,6 +536,7 @@ theorem step_snapIndex {σ' : Type} [LogStore σ'] {κ' : Type} [KVStore κ']
               · rw [applyCommitted_snapIndex, advanceCommit]
                 split <;> rfl
               · rfl
+      | installSnapshot term l li a ps => exact absurd hev (by simp [Event.isSnapRecv])
   | clientReq rid c =>
       rw [Protocol.step, handleClientReq]
       split
@@ -548,7 +552,7 @@ theorem step_snapIndex {σ' : Type} [LogStore σ'] {κ' : Type} [KVStore κ']
 
 /-- Nor the snapshotted state machine. -/
 theorem step_snapKV {σ' : Type} [LogStore σ'] {κ' : Type} [KVStore κ']
-    (s : NodeState σ' κ') (ev : Event) :
+    (s : NodeState σ' κ') (ev : Event) (hev : ev.isSnapRecv = false) :
     (Protocol.step s ev).1.snapKV = s.snapKV := by
   have hmsd : ∀ t v, (maybeStepDown s t v).1.snapKV = s.snapKV := by
     intro t v; rw [maybeStepDown]; split <;> rfl
@@ -584,6 +588,7 @@ theorem step_snapKV {σ' : Type} [LogStore σ'] {κ' : Type} [KVStore κ']
               · rw [applyCommitted_snapKV, advanceCommit]
                 split <;> rfl
               · rfl
+      | installSnapshot term l li a ps => exact absurd hev (by simp [Event.isSnapRecv])
   | clientReq rid c =>
       rw [Protocol.step, handleClientReq]
       split
@@ -599,7 +604,7 @@ theorem step_snapKV {σ' : Type} [LogStore σ'] {κ' : Type} [KVStore κ']
 
 /-- No handler ever un-applies: `lastApplied` only grows. -/
 theorem step_lastApplied_mono {σ' : Type} [LogStore σ'] {κ' : Type} [KVStore κ']
-    (s : NodeState σ' κ') (ev : Event) :
+    (s : NodeState σ' κ') (ev : Event) (hb : s.lastApplied ≤ s.commitIndex) :
     s.lastApplied ≤ (Protocol.step s ev).1.lastApplied := by
   have hmsd : ∀ t v, (maybeStepDown s t v).1.lastApplied = s.lastApplied := by
     intro t v; rw [maybeStepDown]; split <;> rfl
@@ -637,6 +642,21 @@ theorem step_lastApplied_mono {σ' : Type} [LogStore σ'] {κ' : Type} [KVStore 
               · refine Nat.le_trans ?_ (applyCommitted_lastApplied_ge _)
                 rw [advanceCommit]; split <;> exact Nat.le_refl _
               · exact Nat.le_refl _
+      | installSnapshot term lid lastIdx anchor pairs =>
+          rw [Protocol.step, handleInstallSnapshot]
+          split
+          · exact Nat.le_refl _
+          · dsimp only
+            have hmsd' : (maybeStepDown s term (some lid)).1.lastApplied = s.lastApplied :=
+              hmsd term (some lid)
+            split
+            · rename_i hi
+              rw [snapInstalls] at hi
+              simp only [Bool.and_eq_true, decide_eq_true_eq] at hi
+              show s.lastApplied ≤ lastIdx
+              omega
+            · show s.lastApplied ≤ (maybeStepDown s term (some lid)).1.lastApplied
+              omega
   | clientReq rid c =>
       rw [Protocol.step, handleClientReq]
       split
@@ -798,10 +818,43 @@ theorem step_log {σ' : Type} [LogStore σ'] [LawfulLogStore σ'] {κ' : Type} [
           ∧ (pi ≠ 0 → LogStore.termAt s.log pi = some pt)
           ∧ LogStore.firstIndex s.log ≤ pi + 1
           ∧ (Protocol.step s ev).1.role = Role.follower
+          ∧ s.currentTerm ≤ term)
+      ∨ (∃ src term lid lastIdx anchor pairs,
+          ev = Event.recv src (Msg.installSnapshot term lid lastIdx anchor pairs)
+          ∧ Protocol.snapInstalls s term lastIdx anchor = true
+          ∧ (Protocol.step s ev).1.log = LogStore.fromAnchor lastIdx anchor
+          ∧ (Protocol.step s ev).1.role = Role.follower
+          ∧ (Protocol.step s ev).1.snapIndex = lastIdx
+          ∧ (Protocol.step s ev).1.lastApplied = lastIdx
+          ∧ (Protocol.step s ev).1.commitIndex = lastIdx
           ∧ s.currentTerm ≤ term) := by
   cases ev with
   | recv src m =>
       cases m with
+      | installSnapshot term lid lastIdx anchor pairs =>
+          by_cases hi : Protocol.snapInstalls s term lastIdx anchor = true
+          · have hlt : ¬ (term < s.currentTerm) := by
+              rw [snapInstalls] at hi
+              simp only [Bool.and_eq_true, Bool.not_eq_true'] at hi
+              simpa using hi.1.1.1
+            refine Or.inr (Or.inr (Or.inr ⟨src, term, lid, lastIdx, anchor, pairs, rfl, hi,
+              ?_, ?_, ?_, ?_, ?_, by omega⟩)) <;>
+              (rw [Protocol.step, handleInstallSnapshot, if_neg hlt]
+               dsimp only
+               rw [if_pos hi])
+          · left
+            have : (Protocol.step s (Event.recv src
+                (Msg.installSnapshot term lid lastIdx anchor pairs))).1.log = s.log := by
+              rw [Protocol.step, handleInstallSnapshot]
+              by_cases hlt : term < s.currentTerm
+              · rw [if_pos hlt]
+              · rw [if_neg hlt]
+                dsimp only
+                rw [if_neg hi]
+                dsimp only
+                rw [maybeStepDown]
+                split <;> rfl
+            exact this
       | requestVote term candId li lt =>
           left
           rw [Protocol.step, handleRequestVote]
@@ -822,9 +875,9 @@ theorem step_log {σ' : Type} [LogStore σ'] [LawfulLogStore σ'] {κ' : Type} [
           rcases handleAppendEntries_log (s := s) (src := src) (term := term) (leaderId := l)
             (prevIdx := pi) (prevTerm := pt) (es := es) (lc := lc) with h | ⟨h1, h2, h3, hfw, h4, h5⟩
           · exact Or.inl (by rw [Protocol.step]; exact h)
-          · exact Or.inr (Or.inr ⟨src, term, l, pi, pt, es, lc, rfl,
+          · exact Or.inr (Or.inr (Or.inl ⟨src, term, l, pi, pt, es, lc, rfl,
               by rw [Protocol.step]; exact h1, h2, h3, hfw,
-              by rw [Protocol.step]; exact h4, h5⟩)
+              by rw [Protocol.step]; exact h4, h5⟩))
       | appendEntriesResp term ok mi =>
           left
           rw [Protocol.step, handleAppendEntriesResp]
@@ -875,6 +928,14 @@ theorem step_log_of_leader (s : NodeState σ κ) (ev : Event)
   cases ev with
   | recv src m =>
       cases m with
+      | installSnapshot term lid lastIdx anchor pairs =>
+          left
+          by_cases hlt : term < s.currentTerm
+          · rw [Protocol.step, handleInstallSnapshot_stale s term lid lastIdx anchor pairs hlt]
+          · exfalso
+            rw [Protocol.step,
+              handleInstallSnapshot_follower s term lid lastIdx anchor pairs hlt] at hl
+            exact Role.noConfusion hl
       | requestVote term candId li lt =>
           left
           rw [Protocol.step, handleRequestVote] at hl ⊢

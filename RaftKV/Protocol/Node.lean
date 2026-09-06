@@ -94,18 +94,23 @@ def restart (s : NodeState σ κ) : NodeState σ κ := recoverNode s.cfg (persis
 **Log compaction.** Discard everything the state machine has already absorbed,
 recording the state machine itself in its place.
 
-The cut is at `lastApplied + 1`: entries at or below `lastApplied` go, and the
-entry just above stays as the anchor the consistency check needs. The snapshot
-that replaces them is exactly the current state machine, at exactly
-`lastApplied` — which is what makes a later restart sound, since the entries it
-would otherwise have replayed are the ones now summarised.
+The cut is at `lastApplied`: everything strictly below it goes, and the entry
+*at* it stays. That entry is already covered by the snapshot and will never be
+replayed, but it must remain in the log, because it is the anchor a leader
+names in `prevLogIndex` when it replicates `lastApplied + 1`. Discarding it
+would leave the leader unable to serve its own first live entry to anybody.
+
+So after a compaction `firstIndex = snapIndex`, and `snapIndex` is either `0`
+(nothing discarded) or at least `2`. The lower bound matters: at `snapIndex = 1`
+the window would still start at `1`, and a payload anchored at the virtual index
+`0` could overwrite the snapshotted entry.
 
 A no-op unless there is something to discard and something to keep.
 -/
 def compactTo (s : NodeState σ κ) : NodeState σ κ :=
-  if LogStore.firstIndex s.log ≤ s.lastApplied + 1
-      ∧ s.lastApplied + 1 ≤ LogStore.lastIndex s.log then
-    { s with log := LogStore.compact s.log (s.lastApplied + 1),
+  if 2 ≤ s.lastApplied ∧ LogStore.firstIndex s.log ≤ s.lastApplied
+      ∧ s.lastApplied ≤ LogStore.lastIndex s.log then
+    { s with log := LogStore.compact s.log s.lastApplied,
              snapIndex := s.lastApplied, snapKV := s.kv }
   else s
 
@@ -198,6 +203,27 @@ def appendEntriesTo (s : NodeState σ κ) (peer : Nat) : Msg :=
   let prevIdx := ni - 1
   let prevTerm := (LogStore.termAt s.log prevIdx).getD 0
   .appendEntries s.currentTerm s.cfg.me prevIdx prevTerm (LogStore.sliceFrom s.log ni) s.commitIndex
+
+/--
+The snapshot a leader ships to a follower it can no longer serve from the log.
+
+The anchor is the entry at `snapIndex`, which compaction deliberately keeps, so
+this never has to reconstruct anything.
+-/
+def snapshotMsg (s : NodeState σ κ) : Msg :=
+  .installSnapshot s.currentTerm s.cfg.me s.snapIndex
+    ((LogStore.get s.log s.snapIndex).getD default) (KVStore.toPairs s.snapKV)
+
+/--
+What a leader sends a follower whose last `AppendEntries` was rejected: the
+retry, preceded by a snapshot when the retry alone could not possibly succeed.
+
+Kept as its own definition so that "what this handler can send" is one lemma
+rather than a case split repeated at every site that needs it.
+-/
+def retryTo (s : NodeState σ κ) (peer : Nat) (snap : Bool) : List Action :=
+  if snap then [Action.send peer (snapshotMsg s), Action.send peer (appendEntriesTo s peer)]
+  else [Action.send peer (appendEntriesTo s peer)]
 
 /-- Send the appropriate `AppendEntries` to every peer. -/
 def broadcastAppend (s : NodeState σ κ) : List Action :=
@@ -296,6 +322,56 @@ theorem aeConsistent_congr {a b : NodeState σ κ} (h : a.log = b.log) (prevIdx 
 def aeAccepts (s : NodeState σ κ) (term prevIdx prevTerm : Nat) : Bool :=
   !(decide (term < s.currentTerm)) && aeConsistent s prevIdx prevTerm
 
+/-- Does the receiver already hold the snapshot's anchor entry? -/
+def snapHeld (s : NodeState σ κ) (lastIdx : Nat) (anchor : Entry) : Bool :=
+  LogStore.termAt s.log lastIdx == some anchor.term
+
+/--
+Will this snapshot actually be installed?
+
+Three ways it is not: the sender is stale; the receiver already holds the anchor
+and so needs nothing; or the snapshot does not reach past what the receiver
+already considers committed, in which case installing it would throw away
+committed entries. `2 ≤ lastIdx` is the same lower bound `compactTo` maintains.
+
+Factored out because the model in `RaftKV.Protocol.Network` has to make the same
+decision about the ghost logical log, and a second copy of the condition could
+drift from this one.
+-/
+def snapInstalls (s : NodeState σ κ) (term lastIdx : Nat) (anchor : Entry) : Bool :=
+  !(decide (term < s.currentTerm)) && !snapHeld s lastIdx anchor
+    && decide (2 ≤ lastIdx) && decide (s.commitIndex < lastIdx)
+
+/--
+Follower side of snapshot transfer.
+
+**No message goes back.** A snapshot is always sent together with the
+`AppendEntries` that follows it, and it is that message the follower
+acknowledges; replying here would add a second acknowledgement site to the
+protocol for no gain, and every commit-quorum argument would have to be
+re-proved against it.
+
+Leader contact spends the term's vote, exactly as `handleAppendEntries` does —
+which is what keeps the change-attribution argument's witness term strictly
+below the term of any vote the node goes on to cast.
+-/
+def handleInstallSnapshot (s : NodeState σ κ)
+    (term leaderId lastIdx : Nat) (anchor : Entry) (pairs : List (String × String)) :
+    NodeState σ κ × List Action :=
+  if term < s.currentTerm then
+    (s, [])
+  else
+    let sd := maybeStepDown s term (some leaderId)
+    let vf := some (sd.1.votedFor.getD leaderId)
+    let s' := { sd.1 with role := .follower, leaderHint := some leaderId, votedFor := vf }
+    if snapInstalls s term lastIdx anchor then
+      let kv' := KVStore.ofPairs pairs
+      ({ s' with log := LogStore.fromAnchor lastIdx anchor,
+                 snapIndex := lastIdx, snapKV := kv', kv := kv',
+                 lastApplied := lastIdx, commitIndex := lastIdx }, sd.2)
+    else
+      (s', sd.2)
+
 /-- Follower side of log replication. -/
 def handleAppendEntries (s : NodeState σ κ)
     (src term leaderId prevIdx prevTerm : Nat) (entries : List Entry) (leaderCommit : Nat) :
@@ -343,9 +419,14 @@ def handleAppendEntriesResp (s : NodeState σ κ)
   else
     -- Log divergence: back up one index and retry, but never below the window.
     let ni := PeerMap.get s.nextIndex src (LogStore.lastIndex s.log + 1)
-    let s := { s with
+    let s' := { s with
       nextIndex := PeerMap.set s.nextIndex src (max (LogStore.sendFloor s.log) (ni - 1)) }
-    (s, [Action.send src (appendEntriesTo s src)])
+    -- Once the back-off has bottomed out at the window there is nothing further
+    -- to try: the follower needs entries this node no longer has. Ship the
+    -- snapshot ahead of the retry, so the retry lands on an anchor the follower
+    -- now holds. Nothing is sent when nothing has been discarded — an
+    -- uncompacted log can always be replicated from index 1.
+    (s', retryTo s' src (LogStore.firstIndex s.log != 1 && decide (ni ≤ LogStore.sendFloor s.log)))
 
 /-- Accept a client command, or redirect if this node is not the leader. -/
 def handleClientReq (s : NodeState σ κ) (reqId : Nat) (cmd : Command) :
@@ -377,6 +458,8 @@ def step (s : NodeState σ κ) : Event → NodeState σ κ × List Action
       handleAppendEntries s src term leaderId prevIdx prevTerm entries leaderCommit
   | .recv src (.appendEntriesResp term success matchIdx) =>
       handleAppendEntriesResp s src term success matchIdx
+  | .recv _ (.installSnapshot term leaderId lastIdx anchor pairs) =>
+      handleInstallSnapshot s term leaderId lastIdx anchor pairs
   | .clientReq reqId cmd => handleClientReq s reqId cmd
   | .electionTimeout =>
       if s.role == .leader then (s, []) else startElection s

@@ -112,6 +112,14 @@ theorem step_votes_char {s : NodeState σ κ} {ev : Event}
               refine ⟨by rw [hguard.1]; exact fun h => Role.noConfusion h, ?_, ?_⟩
               · split <;> simp
               · left; split <;> simp
+      | installSnapshot term l li a ps =>
+          right
+          by_cases hlt : term < s.currentTerm
+          · rw [Protocol.step, handleInstallSnapshot_stale s term l li a ps hlt] at hne ⊢
+            exact ⟨hne, rfl, Or.inl rfl⟩
+          · exfalso
+            rw [Protocol.step] at hne
+            exact hne (handleInstallSnapshot_follower s term l li a ps hlt)
   | clientReq rid cmd =>
       right
       rw [Protocol.step, handleClientReq] at hne ⊢
@@ -221,6 +229,14 @@ theorem step_leader_quorum {s : NodeState σ κ} {ev : Event}
               simp only [Bool.not_eq_true, Bool.or_eq_false_iff, bne_eq_false_iff_eq] at hguard
               refine ⟨hguard.1, ?_⟩
               split <;> simp
+      | installSnapshot term l li a ps =>
+          left
+          by_cases hlt : term < s.currentTerm
+          · rw [Protocol.step, handleInstallSnapshot_stale s term l li a ps hlt] at hl ⊢
+            exact ⟨hl, rfl⟩
+          · exfalso
+            rw [Protocol.step, handleInstallSnapshot_follower s term l li a ps hlt] at hl
+            exact Role.noConfusion hl
   | clientReq rid cmd =>
       left
       rw [Protocol.step, handleClientReq] at hl ⊢

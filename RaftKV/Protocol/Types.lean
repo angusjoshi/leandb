@@ -67,7 +67,26 @@ inductive Msg where
       (entries : List Entry) (leaderCommit : Nat)
   /-- Reply to `appendEntries`; `matchIndex` is the follower's new last replicated index. -/
   | appendEntriesResp (term : Nat) (success : Bool) (matchIndex : Nat)
+  /--
+  Leader ships its snapshot to a follower it can no longer serve from the log.
+
+  `lastIncluded` is the index the snapshot covers, `anchor` is the entry *at*
+  that index, and `pairs` is the state machine as of it. The anchor travels
+  because the receiver must be left holding something the next `AppendEntries`
+  can be anchored against; without it, replication could not resume.
+  -/
+  | installSnapshot (term leaderId lastIncluded : Nat) (anchor : Entry)
+      (pairs : List (String × String))
   deriving Repr, DecidableEq, Inhabited
+
+namespace Msg
+
+/-- Is this a snapshot transfer? Delivery of those is a separate model rule. -/
+def isSnap : Msg → Bool
+  | .installSnapshot .. => true
+  | _ => false
+
+end Msg
 
 /-- Inputs to the node. Produced by the runtime, consumed by `step`. -/
 inductive Event where
@@ -80,6 +99,15 @@ inductive Event where
   /-- Time for a leader to refresh its authority. -/
   | heartbeatTimeout
   deriving Repr, DecidableEq, Inhabited
+
+namespace Event
+
+/-- Is this the delivery of a snapshot? The one event that moves the snapshot. -/
+def isSnapRecv : Event → Bool
+  | .recv _ (.installSnapshot ..) => true
+  | _ => false
+
+end Event
 
 /-- Outputs of the node. Produced by `step`, executed by the runtime. -/
 inductive Action where

@@ -128,6 +128,33 @@ theorem decEntries_encEntries (es : List Entry) (rest : List Token) :
     decEntries (encEntries es ++ rest) = some (es, rest) := by
   simpa [encEntries, decEntries] using decEntriesN_enc es rest
 
+/-- Encode a list of key/value bindings, length-prefixed. -/
+def encPairs (ps : List (String × String)) : List Token :=
+  .n ps.length :: ps.flatMap (fun p => [.s p.1, .s p.2])
+
+/-- Decode exactly `n` bindings. -/
+def decPairsN : Nat → List Token → Option (List (String × String) × List Token)
+  | 0, ts => some ([], ts)
+  | n + 1, .s k :: .s v :: ts => do
+      let (ps, ts) ← decPairsN n ts
+      some ((k, v) :: ps, ts)
+  | _ + 1, _ => none
+
+/-- Decode a length-prefixed binding list. -/
+def decPairs : List Token → Option (List (String × String) × List Token)
+  | .n n :: ts => decPairsN n ts
+  | _ => none
+
+theorem decPairsN_enc (ps : List (String × String)) (rest : List Token) :
+    decPairsN ps.length (ps.flatMap (fun p => [.s p.1, .s p.2]) ++ rest) = some (ps, rest) := by
+  induction ps generalizing rest with
+  | nil => rfl
+  | cons p ps ih => simp [List.flatMap_cons, decPairsN, ih rest]
+
+theorem decPairs_encPairs (ps : List (String × String)) (rest : List Token) :
+    decPairs (encPairs ps ++ rest) = some (ps, rest) := by
+  simpa [encPairs, decPairs] using decPairsN_enc ps rest
+
 /-! ## Messages -/
 
 namespace Msg
@@ -139,6 +166,8 @@ def enc : Msg → List Token
   | .appendEntries t l pi pt es lc =>
       [.n 2, .n t, .n l, .n pi, .n pt, .n lc] ++ encEntries es
   | .appendEntriesResp t s mi => [.n 3, .n t, .n (if s then 1 else 0), .n mi]
+  | .installSnapshot t l li a ps =>
+      [.n 4, .n t, .n l, .n li] ++ Entry.enc a ++ encPairs ps
 
 /-- Token decoding of a protocol message. -/
 def dec : List Token → Option (Msg × List Token)
@@ -148,6 +177,10 @@ def dec : List Token → Option (Msg × List Token)
       let (es, rest) ← decEntries rest
       some (.appendEntries t l pi pt es lc, rest)
   | .n 3 :: .n t :: .n s :: .n mi :: rest => some (.appendEntriesResp t (s != 0) mi, rest)
+  | .n 4 :: .n t :: .n l :: .n li :: rest => do
+      let (a, rest) ← Entry.dec rest
+      let (ps, rest) ← decPairs rest
+      some (.installSnapshot t l li a ps, rest)
   | _ => none
 
 instance : Codec Msg where
@@ -162,6 +195,12 @@ instance : Codec Msg where
         show dec (_ :: _ :: _ :: _ :: _ :: _ :: (encEntries es ++ rest)) = _
         simp [dec, decEntries_encEntries es rest]
     | appendEntriesResp t s mi => cases s <;> rfl
+    | installSnapshot t l li a ps =>
+        have hA : Entry.dec (Entry.enc a ++ (encPairs ps ++ rest))
+            = some (a, encPairs ps ++ rest) := Codec.decode_encode (α := Entry) a _
+        show dec (enc (.installSnapshot t l li a ps) ++ rest) = _
+        simp only [enc, List.cons_append, List.nil_append, List.append_assoc]
+        simp [dec, hA, decPairs_encPairs ps rest]
 
 end Msg
 

@@ -300,6 +300,57 @@ theorem applyCommitted_applied_le (s : NodeState σ κ) (h : s.lastApplied ≤ s
 @[simp] theorem becomeLeader_commitIndex (s : NodeState σ κ) :
     (becomeLeader s).1.commitIndex = s.commitIndex := rfl
 
+/-! ### The snapshot handler -/
+
+/-- A stale snapshot changes nothing at all. -/
+theorem handleInstallSnapshot_stale (s : NodeState σ κ)
+    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String))
+    (h : term < s.currentTerm) :
+    handleInstallSnapshot s term leaderId lastIdx a ps = (s, []) := by
+  rw [handleInstallSnapshot, if_pos h]
+
+/-- Any other snapshot leaves the receiver a follower — it is leader contact. -/
+theorem handleInstallSnapshot_follower (s : NodeState σ κ)
+    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String))
+    (h : ¬ (term < s.currentTerm)) :
+    (handleInstallSnapshot s term leaderId lastIdx a ps).1.role = Role.follower := by
+  rw [handleInstallSnapshot, if_neg h]
+  dsimp only
+  split <;> rfl
+
+/-- A snapshot that is not installed leaves the log and the snapshot alone. -/
+theorem handleInstallSnapshot_noop (s : NodeState σ κ)
+    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String))
+    (hi : Protocol.snapInstalls s term lastIdx a = false) :
+    (handleInstallSnapshot s term leaderId lastIdx a ps).1.log = s.log
+      ∧ (handleInstallSnapshot s term leaderId lastIdx a ps).1.snapIndex = s.snapIndex
+      ∧ (handleInstallSnapshot s term leaderId lastIdx a ps).1.lastApplied = s.lastApplied
+      ∧ (handleInstallSnapshot s term leaderId lastIdx a ps).1.commitIndex = s.commitIndex := by
+  have hmsd : ∀ v, ((maybeStepDown s term v).1.log = s.log
+      ∧ (maybeStepDown s term v).1.snapIndex = s.snapIndex
+      ∧ (maybeStepDown s term v).1.lastApplied = s.lastApplied
+      ∧ (maybeStepDown s term v).1.commitIndex = s.commitIndex) := by
+    intro v; rw [maybeStepDown]; split <;> exact ⟨rfl, rfl, rfl, rfl⟩
+  rw [handleInstallSnapshot]
+  by_cases hlt : term < s.currentTerm
+  · rw [if_pos hlt]; exact ⟨rfl, rfl, rfl, rfl⟩
+  · rw [if_neg hlt]
+    dsimp only
+    rw [if_neg (by simp [hi])]
+    exact hmsd (some leaderId)
+
+/-- The snapshot handler never touches the configuration. -/
+@[simp] theorem handleInstallSnapshot_cfg (s : NodeState σ κ)
+    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String)) :
+    (handleInstallSnapshot s term leaderId lastIdx a ps).1.cfg = s.cfg := by
+  rw [handleInstallSnapshot]
+  split
+  · rfl
+  · dsimp only
+    have hc : (maybeStepDown s term (some leaderId)).1.cfg = s.cfg := by
+      rw [maybeStepDown]; split <;> rfl
+    split <;> exact hc
+
 @[simp] theorem advanceCommit_lastApplied (s : NodeState σ κ) :
     (advanceCommit s).lastApplied = s.lastApplied := by
   rw [advanceCommit]; split <;> rfl
@@ -365,6 +416,17 @@ theorem step_applied_le (s : NodeState σ κ) (ev : Event) (h : s.lastApplied �
                 refine Nat.le_trans ?_ (advanceCommit_ge _)
                 simpa using h
               · exact h
+      | installSnapshot term l li a ps =>
+          rw [Protocol.step, handleInstallSnapshot]
+          split
+          · exact h
+          · dsimp only
+            have hd : (maybeStepDown s term (some l)).1.lastApplied
+                ≤ (maybeStepDown s term (some l)).1.commitIndex := by
+              rw [maybeStepDown]; split <;> exact h
+            split
+            · exact Nat.le_refl _
+            · simpa using hd
   | clientReq rid cmd =>
       rw [Protocol.step, handleClientReq]
       split

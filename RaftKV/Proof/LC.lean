@@ -219,7 +219,7 @@ theorem grantHasVoteLog_step {members : List Nat} {w w' : World σ κ}
       have hm : m = Msg.requestVoteResp t true := by
         have := congrArg (fun q => q.2.2) heq; simpa using this.symm
       subst hm; subst hvj
-      refine ⟨fullStep (w.nodes v) (w.full v) ev, List.mem_append_right _ ?_⟩
+      refine ⟨fullStep w v ev, List.mem_append_right _ ?_⟩
       unfold voteLogOf
       exact List.mem_filterMap.mpr
         ⟨Action.send to (Msg.requestVoteResp t true), hact, rfl⟩

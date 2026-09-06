@@ -30,7 +30,7 @@ variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 theorem act_created (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).created
       = w.created ++ createdOf j (Protocol.step (w.nodes j) ev).1
-          (fullStep (w.nodes j) (w.full j) ev) ev := rfl
+          (fullStep w j ev) ev := rfl
 
 theorem mem_createdOf {i j k : Nat} {e : Entry} {s : NodeState σ κ} {fl : σ} {ev : Event}
     (h : (i, k, e) ∈ createdOf j s fl ev) :
@@ -53,11 +53,11 @@ Everything a freshly minted entry tells us, as a standalone fact: who minted it,
 that they were leading, at which index, and that their log now holds it there.
 -/
 theorem createdOf_get {j c k : Nat} {e : Entry} {ev : Event} {pre : NodeState σ κ} {fl : σ}
-    (h : (c, k, e) ∈ createdOf j (Protocol.step pre ev).1 (fullStep pre fl ev) ev) :
+    (h : (c, k, e) ∈ createdOf j (Protocol.step pre ev).1 (nodeFullStep pre fl ev) ev) :
     c = j ∧ (Protocol.step pre ev).1.role = Role.leader
       ∧ e.term = (Protocol.step pre ev).1.currentTerm
-      ∧ k = LogStore.lastIndex (fullStep pre fl ev)
-      ∧ LogStore.get (fullStep pre fl ev) k = some e := by
+      ∧ k = LogStore.lastIndex (nodeFullStep pre fl ev)
+      ∧ LogStore.get (nodeFullStep pre fl ev) k = some e := by
   obtain ⟨h1, h2, h3, h4⟩ := mem_createdOf h
   refine ⟨h1, h2, h4, h3, ?_⟩
   cases ev with
@@ -71,9 +71,9 @@ theorem createdOf_get {j c k : Nat} {e : Entry} {ev : Event} {pre : NodeState σ
         · exfalso
           rw [Protocol.step, handleClientReq, if_pos (by simp [hc])] at h2
           exact hc h2
-      have hlog : fullStep pre fl (Event.clientReq rid cmd)
+      have hlog : nodeFullStep pre fl (Event.clientReq rid cmd)
           = LogStore.append fl { term := pre.currentTerm, cmd := cmd, reqId := rid } := by
-        rw [fullStep, if_pos hlead]
+        rw [nodeFullStep, if_pos hlead]
       have hterm : (Protocol.step pre (Event.clientReq rid cmd)).1.currentTerm
           = pre.currentTerm := by rw [Protocol.step]; exact handleClientReq_term_eq
       have hek : e = { term := pre.currentTerm, cmd := cmd, reqId := rid } := by
@@ -123,7 +123,7 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
     intro j ev hw
     subst hw
     -- Everything we need to know about a freshly minted entry.
-    have fresh : ∀ i k e, (i, k, e) ∈ createdOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) ev →
+    have fresh : ∀ i k e, (i, k, e) ∈ createdOf j (Protocol.step (w.nodes j) ev).1 (fullStep w j ev) ev →
         i = j ∧ (w.nodes j).role = Role.leader ∧ e.term = (w.nodes j).currentTerm
           ∧ k = LogStore.lastIndex (w.full j) + 1
           ∧ (w.act j ev).full j = LogStore.append (w.full j) e := by
@@ -140,10 +140,10 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
             · exfalso
               rw [Protocol.step, handleClientReq, if_pos (by simp [hc])] at h2
               exact hc h2
-          have hlog : fullStep (w.nodes j) (w.full j) (Event.clientReq rid cmd)
+          have hlog : fullStep w j (Event.clientReq rid cmd)
               = LogStore.append (w.full j)
                   { term := (w.nodes j).currentTerm, cmd := cmd, reqId := rid } := by
-            rw [fullStep, if_pos hlead]
+            rw [fullStep_node _ _ _ (by simp [Event.isSnapRecv]), nodeFullStep, if_pos hlead]
           have hterm : (Protocol.step (w.nodes j) (Event.clientReq rid cmd)).1.currentTerm
               = (w.nodes j).currentTerm := by
             rw [Protocol.step]; exact handleClientReq_term_eq
@@ -157,7 +157,7 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
           · rw [h3, hlog, LogStore.lastIndex_append]
           · rw [act_full_self, hlog, hek]
     -- A fresh entry's creator is a leader in the post-state too.
-    have freshPost : ∀ i k e, (i, k, e) ∈ createdOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) ev →
+    have freshPost : ∀ i k e, (i, k, e) ∈ createdOf j (Protocol.step (w.nodes j) ev).1 (fullStep w j ev) ev →
         (Protocol.step (w.nodes j) ev).1.role = Role.leader
           ∧ (Protocol.step (w.nodes j) ev).1.currentTerm = e.term := by
       intro i k e hmem
@@ -218,7 +218,7 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
       -- A fresh entry lands strictly beyond everything its creator already holds,
       -- so it cannot collide with anything created earlier in the same term.
       have collide : ∀ a b (x y : Entry), (a, k, x) ∈ w.created →
-          (b, k, y) ∈ createdOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) ev →
+          (b, k, y) ∈ createdOf j (Protocol.step (w.nodes j) ev).1 (fullStep w j ev) ev →
           x.term = y.term → x = y := by
         intro a b x y hx hy hxy
         exfalso

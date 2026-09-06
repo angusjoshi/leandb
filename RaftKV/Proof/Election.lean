@@ -34,7 +34,7 @@ theorem act_nodes_self (w : World σ κ) (j : Nat) (ev : Event) :
 
 /-- The ghost logical log of the acting node takes the same operation its log did. -/
 theorem act_full_self (w : World σ κ) (j : Nat) (ev : Event) :
-    (w.act j ev).full j = fullStep (w.nodes j) (w.full j) ev := by
+    (w.act j ev).full j = fullStep w j ev := by
   rw [World.act]; dsimp only; rw [if_pos rfl]
 
 /-- And no other node's logical log moves. -/
@@ -233,7 +233,6 @@ theorem vote_act {members : List Nat} {w w' : World σ κ}
       · intro v c₁ c₂ t h₁ h₂
         rw [compactAt_sent] at h₁ h₂
         exact hu v c₁ c₂ t h₁ h₂
-
 /-- The invariant is preserved by every step. -/
 theorem inv_step {members : List Nat} {w w' : World σ κ}
     (h : Inv members w) (hs : Step members w w') : Inv members w' := by
@@ -261,7 +260,6 @@ theorem inv_step {members : List Nat} {w w' : World σ κ}
         · subst hji; rw [compactAt_nodes_self, compactTo_cfg]; exact h.cfg j
         · rw [compactAt_nodes_ne _ _ hji]; exact h.cfg j
       · intro a b t c li lt hp; rw [compactAt_sent] at hp; exact h.rvwf a b t c li lt hp
-
 /-- **The invariant holds in every reachable world.** -/
 theorem inv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :
     Inv members w := by

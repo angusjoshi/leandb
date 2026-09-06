@@ -289,7 +289,6 @@ theorem fullInv_step {members : List Nat} {w w' : World σ κ}
   | client i rid cmd hiM => exact sentFrom_act h.sent hiM _
   | crash i _ => intro p hp; rw [crash_sent] at hp; exact h.sent p hp
   | compact i _ => intro p hp; rw [compactAt_sent] at hp; exact h.sent p hp
-
 /-- The full invariant holds in every reachable world. -/
 theorem fullInv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :
     FullInv members w := by

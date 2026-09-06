@@ -70,7 +70,7 @@ theorem PrefixOf.append {a b : σ} (ha : LogStore.firstIndex a = 1) (h : PrefixO
 
 theorem act_leaderLogs (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).leaderLogs
-      = w.leaderLogs ++ leaderLogOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) := rfl
+      = w.leaderLogs ++ leaderLogOf j (Protocol.step (w.nodes j) ev).1 (fullStep w j ev) := rfl
 
 theorem mem_leaderLogOf {i j t : Nat} {lg fl : σ} {s : NodeState σ κ}
     (h : (i, t, lg) ∈ leaderLogOf j s fl) :
@@ -195,7 +195,7 @@ theorem llInv_step {members : List Nat} {w w' : World σ κ}
       intro i t lg₁ lg₂ hm₁ hm₂
       rw [act_leaderLogs] at hm₁ hm₂
       have fresh : ∀ (lgo lgn : σ), (i, t, lgo) ∈ w.leaderLogs →
-          (i, t, lgn) ∈ leaderLogOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) → PrefixOf lgo lgn := by
+          (i, t, lgn) ∈ leaderLogOf j (Protocol.step (w.nodes j) ev).1 (fullStep w j ev) → PrefixOf lgo lgn := by
         intro lgo lgn ho hn
         obtain ⟨h1, h2, h3, _⟩ := mem_leaderLogOf hn
         subst h1; subst h3
@@ -219,7 +219,7 @@ theorem llInv_step {members : List Nat} {w w' : World σ κ}
         exact ⟨lg, leaderLog_mono hlg1, hlg2⟩
       · obtain ⟨h1, hlead, hterm, _, hget⟩ := createdOf_get h'
         subst h1
-        refine ⟨fullStep (w.nodes c) (w.full c) ev, ?_, hget⟩
+        refine ⟨fullStep w c ev, ?_, hget⟩
         rw [act_leaderLogs]
         refine List.mem_append_right _ ?_
         rw [hterm]
@@ -401,7 +401,7 @@ theorem leaderLogHasElected_step {members : List Nat} {w w' : World σ κ}
           rw [hl]
           exact (PrefixOf.refl _).append (full_firstIndex hr X) e
       · -- just elected: the election record is this very snapshot
-        refine ⟨fullStep (w.nodes X) (w.full X) ev, ?_, PrefixOf.refl _⟩
+        refine ⟨fullStep w X ev, ?_, PrefixOf.refl _⟩
         rw [act_elected, h2]
         refine List.mem_append_right _ ?_
         unfold electedOf

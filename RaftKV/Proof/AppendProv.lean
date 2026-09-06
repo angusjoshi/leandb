@@ -57,6 +57,9 @@ theorem step_appendEntries_leader {s : NodeState σ κ} {ev : Event}
           rw [Protocol.step] at h
           rcases handleAppendEntries_send_shape h with ⟨_, _, _, heq⟩
           exact absurd heq (by simp)
+      | installSnapshot a b c d e =>
+          rw [Protocol.step] at h
+          exact absurd h handleInstallSnapshot_no_send
       | requestVoteResp term g =>
           rw [Protocol.step, handleRequestVoteResp] at h ⊢
           by_cases hgt : term > s.currentTerm
@@ -92,10 +95,10 @@ theorem step_appendEntries_leader {s : NodeState σ κ} {ev : Event}
               · rw [if_pos hok] at h; exact absurd h applyCommitted_no_send
               · rw [if_neg hok] at h ⊢
                 dsimp only at h ⊢
-                have heq := List.mem_singleton.mp h
-                have hm := (Action.send.inj heq).2
-                simp only [appendEntriesTo] at hm
-                exact ⟨by simpa using hguard.1, ((Msg.appendEntries.inj hm).1).symm⟩
+                rcases (retryTo_shape h).2 with hm | hm
+                · exact absurd hm (by simp [snapshotMsg])
+                · simp only [appendEntriesTo] at hm
+                  exact ⟨by simpa using hguard.1, ((Msg.appendEntries.inj hm).1).symm⟩
   | clientReq rid cmd =>
       rw [Protocol.step, handleClientReq] at h ⊢
       by_cases hguard : s.role != Role.leader
@@ -157,6 +160,9 @@ theorem step_appendEntries_payload {s : NodeState σ κ} {ev : Event}
           rw [Protocol.step] at h
           rcases handleAppendEntries_send_shape h with ⟨_, _, _, heq⟩
           exact absurd heq (by simp)
+      | installSnapshot a b c d e =>
+          rw [Protocol.step] at h
+          exact absurd h handleInstallSnapshot_no_send
       | requestVoteResp term g =>
           rw [Protocol.step, handleRequestVoteResp] at h ⊢
           by_cases hgt : term > s.currentTerm
@@ -191,7 +197,9 @@ theorem step_appendEntries_payload {s : NodeState σ κ} {ev : Event}
               · rw [if_pos hok] at h; exact absurd h applyCommitted_no_send
               · rw [if_neg hok] at h ⊢
                 dsimp only at h ⊢
-                exact ⟨src, (Action.send.inj (List.mem_singleton.mp h)).2⟩
+                rcases (retryTo_shape h).2 with hm | hm
+                · exact absurd hm (by simp [snapshotMsg])
+                · exact ⟨src, hm⟩
   | clientReq rid cmd =>
       rw [Protocol.step, handleClientReq] at h ⊢
       by_cases hguard : s.role != Role.leader
@@ -229,6 +237,198 @@ theorem broadcastAppend_dest {s : NodeState σ κ} {to : Nat} {m : Msg}
   rw [broadcastAppend] at h
   rcases List.mem_map.mp h with ⟨p, hp, heq⟩
   rw [← (Action.send.inj heq).1]; exact hp
+
+/--
+**A snapshot is only ever transmitted by a leader, stamped with its own term.**
+
+There is one emission site — the back-off path of `handleAppendEntriesResp`,
+which is guarded by leadership exactly as the replication sites are.
+-/
+theorem step_installSnapshot_leader {s : NodeState σ κ} {ev : Event}
+    {to t l li : Nat} {a : Entry} {ps : List (String × String)}
+    (h : Action.send to (Msg.installSnapshot t l li a ps) ∈ (Protocol.step s ev).2) :
+    (Protocol.step s ev).1.role = Role.leader ∧ (Protocol.step s ev).1.currentTerm = t := by
+  cases ev with
+  | recv src m =>
+      cases m with
+      | requestVote a b c d =>
+          rw [Protocol.step] at h
+          rcases handleRequestVote_send_shape h with ⟨_, _, heq⟩
+          exact absurd heq (by simp)
+      | appendEntries a b c d e f =>
+          rw [Protocol.step] at h
+          rcases handleAppendEntries_send_shape h with ⟨_, _, _, heq⟩
+          exact absurd heq (by simp)
+      | installSnapshot a b c d e =>
+          rw [Protocol.step] at h
+          exact absurd h handleInstallSnapshot_no_send
+      | requestVoteResp term g =>
+          exfalso
+          rw [Protocol.step, handleRequestVoteResp] at h
+          split at h
+          · exact stepDown_no_send h
+          · split at h
+            · simp at h
+            · dsimp only at h
+              split at h <;>
+                (split at h
+                 · rw [becomeLeader] at h
+                   rcases broadcastAppend_shape h with ⟨_, _, _, _, _, _, heq⟩
+                   exact absurd heq (by simp)
+                 · simp at h)
+      | appendEntriesResp term ok mi =>
+          rw [Protocol.step, handleAppendEntriesResp] at h ⊢
+          by_cases hgt : term > s.currentTerm
+          · rw [if_pos hgt] at h; exact absurd h stepDown_no_send
+          · rw [if_neg hgt] at h ⊢
+            by_cases hguard : s.role != Role.leader || term != s.currentTerm
+            · rw [if_pos hguard] at h; simp at h
+            · rw [if_neg hguard] at h ⊢
+              simp only [Bool.not_eq_true, Bool.or_eq_false_iff, bne_eq_false_iff_eq] at hguard
+              by_cases hok : ok = true
+              · rw [if_pos hok] at h; exact absurd h applyCommitted_no_send
+              · rw [if_neg hok] at h ⊢
+                dsimp only at h ⊢
+                rcases (retryTo_shape h).2 with hm | hm
+                · rw [snapshotMsg] at hm
+                  exact ⟨by simpa using hguard.1, ((Msg.installSnapshot.inj hm).1).symm⟩
+                · exact absurd hm (by simp [appendEntriesTo])
+  | clientReq rid cmd =>
+      exfalso
+      rw [Protocol.step, handleClientReq] at h
+      split at h
+      · simp at h
+      · dsimp only at h
+        rcases List.mem_append.mp h with h' | h'
+        · rcases broadcastAppend_shape h' with ⟨_, _, _, _, _, _, heq⟩
+          exact absurd heq (by simp)
+        · exact applyCommitted_no_send h'
+  | electionTimeout =>
+      exfalso
+      rw [Protocol.step] at h
+      split at h
+      · simp at h
+      · rw [startElection] at h
+        dsimp only at h
+        split at h
+        · rw [becomeLeader] at h
+          rcases broadcastAppend_shape h with ⟨_, _, _, _, _, _, heq⟩
+          exact absurd heq (by simp)
+        · rcases List.mem_map.mp h with ⟨_, _, heq⟩
+          exact absurd (Action.send.inj heq).2 (by simp)
+  | heartbeatTimeout =>
+      exfalso
+      rw [Protocol.step] at h
+      split at h
+      · rcases broadcastAppend_shape h with ⟨_, _, _, _, _, _, heq⟩
+        exact absurd heq (by simp)
+      · simp at h
+
+/--
+**What a snapshot on the wire says about its sender.**
+
+There is one emission site, and it reads every field straight off the sender's
+state — including the anchor, which it takes from the log, so the snapshot is
+never about an entry the sender does not hold. The guard on that site is what
+gives the last conjunct, and with it the fact that the anchor index is inside
+the sender's window.
+-/
+theorem step_installSnapshot_payload {s : NodeState σ κ} {ev : Event}
+    {to t l li : Nat} {a : Entry} {ps : List (String × String)}
+    (h : Action.send to (Msg.installSnapshot t l li a ps) ∈ (Protocol.step s ev).2) :
+    t = s.currentTerm ∧ li = s.snapIndex
+      ∧ a = (LogStore.get s.log s.snapIndex).getD default
+      ∧ ps = KVStore.toPairs s.snapKV
+      ∧ LogStore.firstIndex s.log ≠ 1
+      ∧ (Protocol.step s ev).1.log = s.log
+      ∧ (Protocol.step s ev).1.snapIndex = s.snapIndex
+      ∧ (Protocol.step s ev).1.snapKV = s.snapKV
+      ∧ (Protocol.step s ev).1.currentTerm = s.currentTerm
+      ∧ ev.isSnapRecv = false
+      ∧ ∀ fl : σ, nodeFullStep s fl ev = fl := by
+  cases ev with
+  | recv src m =>
+      cases m with
+      | requestVote a b c d =>
+          rw [Protocol.step] at h
+          rcases handleRequestVote_send_shape h with ⟨_, _, heq⟩
+          exact absurd heq (by simp)
+      | appendEntries a b c d e f =>
+          rw [Protocol.step] at h
+          rcases handleAppendEntries_send_shape h with ⟨_, _, _, heq⟩
+          exact absurd heq (by simp)
+      | installSnapshot a b c d e =>
+          rw [Protocol.step] at h
+          exact absurd h handleInstallSnapshot_no_send
+      | requestVoteResp term g =>
+          exfalso
+          rw [Protocol.step, handleRequestVoteResp] at h
+          split at h
+          · exact stepDown_no_send h
+          · split at h
+            · simp at h
+            · dsimp only at h
+              split at h <;>
+                (split at h
+                 · rw [becomeLeader] at h
+                   rcases broadcastAppend_shape h with ⟨_, _, _, _, _, _, heq⟩
+                   exact absurd heq (by simp)
+                 · simp at h)
+      | appendEntriesResp term ok mi =>
+          rw [Protocol.step, handleAppendEntriesResp] at h ⊢
+          by_cases hgt : term > s.currentTerm
+          · rw [if_pos hgt] at h; exact absurd h stepDown_no_send
+          · rw [if_neg hgt] at h ⊢
+            by_cases hguard : s.role != Role.leader || term != s.currentTerm
+            · rw [if_pos hguard] at h; simp at h
+            · rw [if_neg hguard] at h ⊢
+              by_cases hok : ok = true
+              · rw [if_pos hok] at h; exact absurd h applyCommitted_no_send
+              · rw [if_neg hok] at h ⊢
+                dsimp only at h ⊢
+                rw [retryTo] at h
+                split at h
+                · rename_i hcond
+                  simp only [Bool.and_eq_true, bne_iff_ne] at hcond
+                  rcases List.mem_cons.mp h with h' | h'
+                  · have hm := (Action.send.inj h').2
+                    rw [snapshotMsg] at hm
+                    obtain ⟨h1, _, h3, h4, h5⟩ := Msg.installSnapshot.inj hm
+                    exact ⟨h1, h3, h4, h5, hcond.1, rfl, rfl, rfl, rfl, rfl, fun _ => rfl⟩
+                  · rcases List.mem_singleton.mp h' with h''
+                    exact absurd (Action.send.inj h'').2 (by simp [appendEntriesTo])
+                · rcases List.mem_singleton.mp h with h''
+                  exact absurd (Action.send.inj h'').2 (by simp [appendEntriesTo])
+  | clientReq rid cmd =>
+      exfalso
+      rw [Protocol.step, handleClientReq] at h
+      split at h
+      · simp at h
+      · dsimp only at h
+        rcases List.mem_append.mp h with h' | h'
+        · rcases broadcastAppend_shape h' with ⟨_, _, _, _, _, _, heq⟩
+          exact absurd heq (by simp)
+        · exact applyCommitted_no_send h'
+  | electionTimeout =>
+      exfalso
+      rw [Protocol.step] at h
+      split at h
+      · simp at h
+      · rw [startElection] at h
+        dsimp only at h
+        split at h
+        · rw [becomeLeader] at h
+          rcases broadcastAppend_shape h with ⟨_, _, _, _, _, _, heq⟩
+          exact absurd heq (by simp)
+        · rcases List.mem_map.mp h with ⟨_, _, heq⟩
+          exact absurd (Action.send.inj heq).2 (by simp)
+  | heartbeatTimeout =>
+      exfalso
+      rw [Protocol.step] at h
+      split at h
+      · rcases broadcastAppend_shape h with ⟨_, _, _, _, _, _, heq⟩
+        exact absurd heq (by simp)
+      · simp at h
 
 /-- Every message a node sends goes either to a peer or back to whoever just wrote to it. -/
 theorem step_send_dest {s : NodeState σ κ} {ev : Event} {to : Nat} {m : Msg}
@@ -286,7 +486,11 @@ theorem step_send_dest {s : NodeState σ κ} {ev : Event} {to : Nat} {m : Msg}
             · split at h
               · exact absurd h applyCommitted_no_send
               · dsimp only at h
-                exact (Action.send.inj (List.mem_singleton.mp h)).1
+                exact (retryTo_shape h).1
+      | installSnapshot a b c d e =>
+          exfalso
+          rw [Protocol.step] at h
+          exact handleInstallSnapshot_no_send h
   | clientReq rid cmd =>
       left
       rw [Protocol.step, handleClientReq] at h
@@ -324,16 +528,24 @@ def AEFromWinner (members : List Nat) (w : World σ κ) : Prop :=
   ∀ src dst t l pi pt es lc, (src, dst, Msg.appendEntries t l pi pt es lc) ∈ w.sent →
     WonTerm members w src t
 
+/-- A snapshot on the wire, likewise, was sent by the winner of its term. -/
+def SnapFromWinner (members : List Nat) (w : World σ κ) : Prop :=
+  ∀ src dst t l li (a : Entry) (ps : List (String × String)),
+    (src, dst, Msg.installSnapshot t l li a ps) ∈ w.sent → WonTerm members w src t
+
 /-- Provenance invariants, maintained together. -/
 structure PInv (members : List Nat) (w : World σ κ) : Prop where
   /-- Packets are never self-addressed. -/
   notSelf : PacketsNotSelf w
   /-- Replication traffic comes from the term's winner. -/
   aeWinner : AEFromWinner members w
+  /-- And so does snapshot traffic. -/
+  snapWinner : SnapFromWinner members w
 
 theorem pInv_init (members : List Nat) : PInv (σ := σ) (κ := κ) members (World.init members) where
   notSelf := by intro p hp; simp [World.init] at hp
   aeWinner := by intro src dst t l pi pt es lc hp; simp [World.init] at hp
+  snapWinner := by intro src dst t l li a ps hp; simp [World.init] at hp
 
 /--
 **The provenance invariants are preserved by every step.**
@@ -382,6 +594,21 @@ theorem pInv_step {members : List Nat} {w w' : World σ κ}
         have := wonTerm_of_leader ha.leader.votes ha.leader.quorum ha.ghost hlead
         rw [act_nodes_self, hterm] at this
         exact this
+    · intro src dst t l li a ps hp
+      rw [act_sent] at hp
+      rcases List.mem_append.mp hp with hp' | hp'
+      · exact wonTerm_act (h.snapWinner src dst t l li a ps hp') _ _
+      · rcases mem_sendsOf hp' with ⟨to, m, heq, hact⟩
+        have h1 : src = j := congrArg (fun q => q.1) heq
+        have hm : m = Msg.installSnapshot t l li a ps := by
+          have := congrArg (fun q => q.2.2) heq; simpa using this.symm
+        subst hm; subst h1
+        obtain ⟨hrole, hterm⟩ := step_installSnapshot_leader hact
+        have hlead : ((w.act src ev).nodes src).role = Role.leader := by
+          rw [act_nodes_self]; exact hrole
+        have := wonTerm_of_leader ha.leader.votes ha.leader.quorum ha.ghost hlead
+        rw [act_nodes_self, hterm] at this
+        exact this
   cases hs with
   | deliver s d m hd hmem =>
       exact main d _ (by
@@ -393,18 +620,26 @@ theorem pInv_step {members : List Nat} {w w' : World σ κ}
   | heartbeat i _ => exact main i _ (fun _ _ hq => Event.noConfusion hq) ha'
   | client i rid cmd _ => exact main i _ (fun _ _ hq => Event.noConfusion hq) ha'
   | crash i _ =>
-      refine ⟨?_, ?_⟩
+      refine ⟨?_, ?_, ?_⟩
       · intro p hp; rw [crash_sent] at hp; exact h.notSelf p hp
       · intro src dst t l pi pt es lc hp
         rw [crash_sent] at hp
         obtain ⟨V, h1, h2, h3, h4⟩ := h.aeWinner src dst t l pi pt es lc hp
         exact ⟨V, h1, h2, h3, fun v hv => by rw [crash_votes]; exact h4 v hv⟩
+      · intro src dst t l li a ps hp
+        rw [crash_sent] at hp
+        obtain ⟨V, h1, h2, h3, h4⟩ := h.snapWinner src dst t l li a ps hp
+        exact ⟨V, h1, h2, h3, fun v hv => by rw [crash_votes]; exact h4 v hv⟩
   | compact i _ =>
-      refine ⟨?_, ?_⟩
+      refine ⟨?_, ?_, ?_⟩
       · intro p hp; rw [compactAt_sent] at hp; exact h.notSelf p hp
       · intro src dst t l pi pt es lc hp
         rw [compactAt_sent] at hp
         obtain ⟨V, h1, h2, h3, h4⟩ := h.aeWinner src dst t l pi pt es lc hp
+        exact ⟨V, h1, h2, h3, fun v hv => by rw [compactAt_votes]; exact h4 v hv⟩
+      · intro src dst t l li a ps hp
+        rw [compactAt_sent] at hp
+        obtain ⟨V, h1, h2, h3, h4⟩ := h.snapWinner src dst t l li a ps hp
         exact ⟨V, h1, h2, h3, fun v hv => by rw [compactAt_votes]; exact h4 v hv⟩
 
 /-- The provenance invariants hold in every reachable world. -/

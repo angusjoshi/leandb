@@ -35,12 +35,25 @@ def MsgFromCreated (w : World σ κ) : Prop :=
     (src, dst, Msg.appendEntries t l pi pt es lc) ∈ w.sent → es[n]? = some e →
     ∃ c, (c, pi + 1 + n, e) ∈ w.created
 
+/--
+Every entry in a recorded leader snapshot's log was created at that index too.
+
+A follower installing a snapshot inherits a prefix of one of these, so the
+property has to travel with the record. Records are immutable and `created` only
+grows, so it does.
+-/
+def SnapFromCreated (w : World σ κ) : Prop :=
+  ∀ i T n ps (lg : σ), (i, T, n, ps, lg) ∈ w.snapLogs →
+    ∀ k e, LogStore.get lg k = some e → ∃ c, (c, k, e) ∈ w.created
+
 /-- The bridge invariants. -/
 structure BInv (members : List Nat) (w : World σ κ) : Prop where
   /-- Logs hold only created entries. -/
   logs : LogFromCreated w
   /-- Payloads carry only created entries. -/
   msgs : MsgFromCreated w
+  /-- And so do the logs recorded for snapshot transfer. -/
+  snaps : SnapFromCreated w
 
 theorem bInv_init (members : List Nat) :
     BInv (σ := σ) (κ := κ) members (World.init members) where
@@ -52,6 +65,7 @@ theorem bInv_init (members : List Nat) :
     simp only [LogStore.lastIndex_empty, LawfulLogStore.first_empty] at hs
     omega
   msgs := by intro src dst t l pi pt es lc n e h; simp [World.init] at h
+  snaps := by intro i T n ps lg h; simp [World.init] at h
 
 /-- A leader's payload is exactly a tail of its own log. -/
 theorem appendEntriesTo_entries {s : NodeState σ κ} {p n : Nat} {e : Entry}
@@ -84,8 +98,9 @@ theorem bInv_step {members : List Nat} {w w' : World σ κ}
       by_cases hij : i = j
       · subst hij
         rw [act_full_self] at hget
-        rcases full_step (w.nodes i) (w.full i) ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
-          ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩
+        rcases world_full_step w i ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
+          ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩ |
+          ⟨src, term, lid, lastIdx, anchor, pairs, hev, hi, _⟩
         · rw [hl] at hget
           obtain ⟨c, hc⟩ := h.logs i k e hget
           exact ⟨c, created_mono hc⟩
@@ -108,8 +123,9 @@ theorem bInv_step {members : List Nat} {w w' : World σ κ}
             rw [if_pos hpost]
             refine List.mem_singleton.mpr ?_
             have hidx : k = LogStore.lastIndex
-                (fullStep (w.nodes i) (w.full i) (Event.clientReq rid cmd)) := by
-              rw [hk, fullStep, if_pos hlead, LogStore.lastIndex_append]
+                (fullStep w i (Event.clientReq rid cmd)) := by
+              rw [hk, fullStep_node _ _ _ (by simp [Event.isSnapRecv]), nodeFullStep,
+                if_pos hlead, LogStore.lastIndex_append]
             have hent : e = { term := (Protocol.step (w.nodes i)
                 (Event.clientReq rid cmd)).1.currentTerm, cmd := cmd, reqId := rid } := by
               rw [he, Protocol.step, handleClientReq_term_eq]
@@ -132,10 +148,39 @@ theorem bInv_step {members : List Nat} {w w' : World σ κ}
             obtain ⟨c, hc⟩ := h.msgs src i term l pi pt es lc n e'
               (hdel src (Msg.appendEntries term l pi pt es lc) rfl) hn
             exact ⟨c, created_mono hc⟩
+        · -- an installed snapshot: the entries come from the sender's record
+          obtain ⟨lg, hrec, hget', hlg1, hfl⟩ :=
+            snapInstall_facts (fullBridge_reachable hr)
+              (hdel src (Msg.installSnapshot term lid lastIdx anchor pairs) hev) hi
+          rw [hev, hfl, LogStore.get_truncFrom] at hget
+          split at hget
+          · obtain ⟨c, hc⟩ := h.snaps _ _ _ _ _ hrec k e hget
+            exact ⟨c, created_mono hc⟩
+          · simp at hget
       · rw [act_full_ne _ _ _ hij] at hget
         obtain ⟨c, hc⟩ := h.logs i k e hget
         exact ⟨c, created_mono hc⟩
-    refine ⟨hlogs, ?_⟩
+    have hsnaps : SnapFromCreated (w.act j ev) := by
+      -- a fresh record's log is the acting node's new logical log, which `hlogs` covers
+      intro i T n ps lg hm k e hget
+      rw [act_snapLogs] at hm
+      rcases List.mem_append.mp hm with hm' | hm'
+      · obtain ⟨c, hc⟩ := h.snaps i T n ps lg hm' k e hget
+        exact ⟨c, created_mono hc⟩
+      · rw [snapLogOf] at hm'
+        split at hm'
+        · rcases List.mem_singleton.mp hm' with hq
+          have hlg : lg = fullStep w j ev := by
+            have hq2 := congrArg (fun r => r.2.2.2.2) hq
+            simpa using hq2
+          have hij : i = j := by
+            have hq1 := congrArg (fun r => r.1) hq
+            simpa using hq1
+          subst hij
+          refine hlogs i k e ?_
+          rw [act_full_self, ← hlg]; exact hget
+        · simp at hm'
+    refine ⟨hlogs, ?_, hsnaps⟩
     -- Payloads: a fresh one is drawn from the sender's post-state log.
     intro src dst t l pi pt es lc n e hp hn
     rw [act_sent] at hp
@@ -176,8 +221,8 @@ theorem bInv_step {members : List Nat} {w w' : World σ κ}
   | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | crash k hk =>
-      -- the log is durable and nothing is sent, so both halves carry over
-      refine ⟨?_, ?_⟩
+      -- the log is durable and nothing is sent, so every half carries over
+      refine ⟨?_, ?_, ?_⟩
       · intro i k' e hget
         rw [crash_created]
         rw [crash_full] at hget
@@ -185,8 +230,11 @@ theorem bInv_step {members : List Nat} {w w' : World σ κ}
       · intro src dst t l pi pt es lc n e hp hn
         rw [crash_sent] at hp; rw [crash_created]
         exact h.msgs src dst t l pi pt es lc n e hp hn
+      · intro i T n ps lg hm k' e hget
+        rw [crash_snapLogs] at hm; rw [crash_created]
+        exact h.snaps i T n ps lg hm k' e hget
   | compact k hk =>
-      refine ⟨?_, ?_⟩
+      refine ⟨?_, ?_, ?_⟩
       · intro i k' e hget
         rw [compactAt_created]
         rw [compactAt_full] at hget
@@ -194,6 +242,9 @@ theorem bInv_step {members : List Nat} {w w' : World σ κ}
       · intro src dst t l pi pt es lc n e hp hn
         rw [compactAt_sent] at hp; rw [compactAt_created]
         exact h.msgs src dst t l pi pt es lc n e hp hn
+      · intro i T n ps lg hm k' e hget
+        rw [compactAt_snapLogs] at hm; rw [compactAt_created]
+        exact h.snaps i T n ps lg hm k' e hget
 
 /-- The bridge invariants hold in every reachable world. -/
 theorem bInv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :

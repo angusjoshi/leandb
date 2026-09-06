@@ -27,11 +27,11 @@ variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 @[simp] theorem act_commits (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).commits
       = w.commits ++ commitOf j (w.nodes j) (Protocol.step (w.nodes j) ev).1
-          (fullStep (w.nodes j) (w.full j) ev) := rfl
+          (fullStep w j ev) := rfl
 
 @[simp] theorem act_created' (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).created
-      = w.created ++ createdOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) ev := rfl
+      = w.created ++ createdOf j (Protocol.step (w.nodes j) ev).1 (fullStep w j ev) ev := rfl
 
 @[simp] theorem act_hist (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).hist
@@ -42,11 +42,11 @@ variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 
 @[simp] theorem act_createTime (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).createTime
-      = w.createTime ++ createTimeOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) ev w.clock := rfl
+      = w.createTime ++ createTimeOf j (Protocol.step (w.nodes j) ev).1 (fullStep w j ev) ev w.clock := rfl
 
 @[simp] theorem act_commitTime (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).commitTime
-      = w.commitTime ++ commitTimeOf j (w.nodes j) (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) w.clock := rfl
+      = w.commitTime ++ commitTimeOf j (w.nodes j) (Protocol.step (w.nodes j) ev).1 (fullStep w j ev) w.clock := rfl
 
 /-! ## Replies come only from applying committed entries -/
 
@@ -581,7 +581,7 @@ theorem lInv_step {members : List Nat} {w w' : World σ κ}
     · obtain ⟨htt, hij, hact⟩ := mem_histOf_respond h'
       subst htt; subst hij
       obtain ⟨e, hg, hrid, hn1, hn2, hspec⟩ :=
-        step_reply (fullStep (w.nodes i) (w.full i) ev) (w.nodes i) ev
+        step_reply (fullStep w i ev) (w.nodes i) ev
           (fun k hk => by
             have := full_get hr' (i := i) (k := k) (by rw [act_nodes_self]; exact hk)
             rwa [act_nodes_self, act_full_self] at this)
@@ -589,7 +589,7 @@ theorem lInv_step {members : List Nat} {w w' : World σ κ}
           (step_appliedModel_pre hnd hr hdel) hact
       -- the applied entry is committed
       have hnode : ((w.act i ev).nodes i) = (Protocol.step (w.nodes i) ev).1 := act_nodes_self w i ev
-      have hfnode : ((w.act i ev).full i) = fullStep (w.nodes i) (w.full i) ev :=
+      have hfnode : ((w.act i ev).full i) = fullStep w i ev :=
         act_full_self w i ev
       obtain ⟨T, hcom, _⟩ := (sInv_reachable hnd hr').cov i n e
         (by rw [hnode]; exact hn2) (by rw [hfnode]; exact hg)
@@ -599,21 +599,21 @@ theorem lInv_step {members : List Nat} {w w' : World σ κ}
       refine ⟨c, lgc, t', e, ht1, by omega, hn1, hnc, hgc, hrid, ?_⟩
       -- the two logs hold the same committed prefix below `n`
       have hagree : ∀ k, k ≤ n - 1 →
-          LogStore.get lgc k = LogStore.get (fullStep (w.nodes i) (w.full i) ev) k := by
+          LogStore.get lgc k = LogStore.get (fullStep w i ev) k := by
         refine committed_prefix_agree hnd hr' ?_ ?_
         · intro k hk1 hk2
           obtain ⟨e', hg', hc'⟩ := commit_covers hnd hr' hcm hk1 (by omega)
           exact ⟨e', T, hg', hc'⟩
         · intro k hk1 hk2
           obtain ⟨e', hg'⟩ : ∃ e',
-              LogStore.get (fullStep (w.nodes i) (w.full i) ev) k = some e' := by
-            cases hq : LogStore.get (fullStep (w.nodes i) (w.full i) ev) k with
+              LogStore.get (fullStep w i ev) k = some e' := by
+            cases hq : LogStore.get (fullStep w i ev) k with
             | none =>
                 exfalso
                 have hb := (sInv_reachable hnd hr').bound i
                 rw [hfnode, hnode] at hb
                 have := (LogStore.get_isSome_iff
-                  (fullStep (w.nodes i) (w.full i) ev) k).mpr
+                  (fullStep w i ev) k).mpr
                   ⟨by rw [← hfnode, full_firstIndex hr' i]; omega, by omega⟩
                 rw [hq] at this; exact Bool.noConfusion this
             | some e' => exact ⟨e', rfl⟩

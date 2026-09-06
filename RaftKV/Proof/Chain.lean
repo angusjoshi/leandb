@@ -21,7 +21,7 @@ open RaftKV Protocol
 variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 
 theorem act_chain (w : World σ κ) (j : Nat) (ev : Event) :
-    (w.act j ev).chain = w.chain ++ chainOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) ev := rfl
+    (w.act j ev).chain = w.chain ++ chainOf j (Protocol.step (w.nodes j) ev).1 (fullStep w j ev) ev := rfl
 
 theorem mem_chainOf {j idx p : Nat} {e : Entry} {s : NodeState σ κ} {fl : σ} {ev : Event}
     (h : (idx, e, p) ∈ chainOf j s fl ev) :
@@ -75,10 +75,18 @@ def ChainCreated (w : World σ κ) : Prop :=
 def ChainDet (w : World σ κ) : Prop :=
   ∀ idx e p₁ p₂, (idx, e, p₁) ∈ w.chain → (idx, e, p₂) ∈ w.chain → p₁ = p₂
 
+/-- Recorded leader snapshots carry their predecessor links too. -/
+def SnapChain (w : World σ κ) : Prop :=
+  ∀ i T n ps (lg : σ), (i, T, n, ps, lg) ∈ w.snapLogs →
+    ∀ idx e, LogStore.get lg idx = some e → 2 ≤ idx →
+      ∃ p, (idx, e, p) ∈ w.chain ∧ LogStore.termAt lg (idx - 1) = some p
+
 /-- The chain invariants. -/
 structure ChInv (members : List Nat) (w : World σ κ) : Prop where
   /-- Logs carry their predecessor links. -/
   logs : LogChain w
+  /-- And so do the logs recorded for snapshot transfer. -/
+  snaps : SnapChain w
   /-- Payloads carry their predecessor links. -/
   msgs : MsgChain w
   /-- Links belong to minted entries. -/
@@ -96,6 +104,7 @@ theorem chInv_init (members : List Nat) :
     have hs := (LogStore.get_isSome_iff (LogStore.empty : σ) idx).mp (by rw [h]; rfl)
     simp only [LogStore.lastIndex_empty] at hs
     omega
+  snaps := by intro i T n ps lg h; simp [World.init] at h
   msgs := by intro src dst t l pi pt es lc n e h; simp [World.init] at h
   created := by intro idx e p h; simp [World.init] at h
   det := by intro idx e p₁ p₂ h; simp [World.init] at h
@@ -117,8 +126,9 @@ theorem chInv_step {members : List Nat} {w w' : World σ κ}
       by_cases hij : i = j
       · subst hij
         rw [act_full_self] at hget ⊢
-        rcases full_step (w.nodes i) (w.full i) ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
-          ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩
+        rcases world_full_step w i ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
+          ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩ |
+          ⟨src, term, lid, lastIdx, anchor, pairs, hev, hi, _⟩
         · rw [hl] at hget ⊢
           obtain ⟨p, hp1, hp2⟩ := h.logs i idx e hget hidx
           exact ⟨p, chain_mono hp1, hp2⟩
@@ -147,16 +157,18 @@ theorem chInv_step {members : List Nat} {w w' : World σ κ}
               rw [if_pos hpost]
               refine List.mem_singleton.mpr ?_
               have hidx' : idx = LogStore.lastIndex
-                  (fullStep (w.nodes i) (w.full i) (Event.clientReq rid cmd)) := by
-                rw [hk, fullStep, if_pos hlead, LogStore.lastIndex_append]
+                  (fullStep w i (Event.clientReq rid cmd)) := by
+                rw [hk, fullStep_node _ _ _ (by simp [Event.isSnapRecv]), nodeFullStep,
+                  if_pos hlead, LogStore.lastIndex_append]
               have hent : e = { term := (Protocol.step (w.nodes i)
                   (Event.clientReq rid cmd)).1.currentTerm, cmd := cmd, reqId := rid } := by
                 rw [he, Protocol.step, handleClientReq_term_eq]
               have hterm' : v.term = (LogStore.termAt
-                  (fullStep (w.nodes i) (w.full i) (Event.clientReq rid cmd))
+                  (fullStep w i (Event.clientReq rid cmd))
                   (LogStore.lastIndex
-                    (fullStep (w.nodes i) (w.full i) (Event.clientReq rid cmd)) - 1)).getD 0 := by
-                rw [← hidx', fullStep, if_pos hlead]
+                    (fullStep w i (Event.clientReq rid cmd)) - 1)).getD 0 := by
+                rw [← hidx', fullStep_node _ _ _ (by simp [Event.isSnapRecv]), nodeFullStep,
+                  if_pos hlead]
                 unfold LogStore.termAt
                 rw [LogStore.get_append, if_neg (by omega), hv]
                 rfl
@@ -234,6 +246,21 @@ theorem chInv_step {members : List Nat} {w w' : World σ κ}
                   (idx - (pi + 1) - 1) e' hbound (by omega) he'
                 rw [show pi + 1 + (idx - (pi + 1) - 1) = idx - 1 by omega] at this
                 rw [this, hpe]
+        · -- an installed snapshot: the links come with the sender's record
+          obtain ⟨lg, hrec, hget', hlg1, hfl⟩ :=
+            snapInstall_facts (fullBridge_reachable hr)
+              (hdel src (Msg.installSnapshot term lid lastIdx anchor pairs) hev) hi
+          rw [hev] at hget ⊢
+          rw [hfl] at hget ⊢
+          rw [LogStore.get_truncFrom] at hget
+          split at hget
+          · rename_i hlow
+            obtain ⟨p, hp1, hp2⟩ := h.snaps _ _ _ _ _ hrec idx e hget hidx
+            refine ⟨p, chain_mono hp1, ?_⟩
+            unfold LogStore.termAt at hp2 ⊢
+            rw [LogStore.get_truncFrom, if_pos (by omega)]
+            exact hp2
+          · simp at hget
       · rw [act_full_ne _ _ _ hij] at hget ⊢
         obtain ⟨p, hp1, hp2⟩ := h.logs i idx e hget hidx
         exact ⟨p, chain_mono hp1, hp2⟩
@@ -261,7 +288,7 @@ theorem chInv_step {members : List Nat} {w w' : World σ κ}
       have hc0 := cInv_reachable hnd hr
       -- a fresh link sits beyond everything its creator already holds
       have collide : ∀ idx e p p', (idx, e, p) ∈ w.chain →
-          (idx, e, p') ∈ chainOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) ev → p = p' := by
+          (idx, e, p') ∈ chainOf j (Protocol.step (w.nodes j) ev).1 (fullStep w j ev) ev → p = p' := by
         intro idx e p p' hold hnew
         exfalso
         obtain ⟨hlead, hidx0, hterm0, rid, cmd, hev⟩ := mem_chainOf hnew
@@ -288,7 +315,7 @@ theorem chInv_step {members : List Nat} {w w' : World σ κ}
         have hget := hc0.inLeader c idx e hc hold'
         have hle := LogStore.le_lastIndex_of_get hget
         subst hev
-        rw [fullStep, if_pos hpre, LogStore.lastIndex_append] at hidx0
+        rw [fullStep_node _ _ _ (by simp [Event.isSnapRecv]), nodeFullStep, if_pos hpre, LogStore.lastIndex_append] at hidx0
         omega
       intro idx e p₁ p₂ hm₁ hm₂
       rw [act_chain] at hm₁ hm₂
@@ -306,7 +333,27 @@ theorem chInv_step {members : List Nat} {w w' : World σ κ}
           simp only [List.mem_singleton, Prod.mk.injEq] at h₁ h₂
           rw [h₁.2.2, h₂.2.2]
         · rw [if_neg hq] at h₁; simp at h₁
-    refine ⟨hlogs, ?_, hcr, hdt⟩
+    have hsnaps : SnapChain (w.act j ev) := by
+      intro i T n ps lg hm idx e hget hidx
+      rw [act_snapLogs] at hm
+      rcases List.mem_append.mp hm with hm' | hm'
+      · obtain ⟨p, hp1, hp2⟩ := h.snaps i T n ps lg hm' idx e hget hidx
+        exact ⟨p, chain_mono hp1, hp2⟩
+      · rw [snapLogOf] at hm'
+        split at hm'
+        · rcases List.mem_singleton.mp hm' with hq
+          have hlg : lg = fullStep w j ev := by
+            have hq2 := congrArg (fun r => r.2.2.2.2) hq
+            simpa using hq2
+          have hij : i = j := by
+            have hq1 := congrArg (fun r => r.1) hq
+            simpa using hq1
+          subst hij
+          have := hlogs i idx e (by rw [act_full_self, ← hlg]; exact hget) hidx
+          rw [act_full_self, ← hlg] at this
+          exact this
+        · simp at hm'
+    refine ⟨hlogs, hsnaps, ?_, hcr, hdt⟩
     intro src dst t l pi pt es lc n e hp hn hidx
     rw [act_sent] at hp
     rcases List.mem_append.mp hp with hp' | hp'
@@ -383,11 +430,14 @@ theorem chInv_step {members : List Nat} {w w' : World σ κ}
   | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | crash k hk =>
       -- logs are durable; the chain, the payloads and the mint records do not move
-      refine ⟨?_, ?_, ?_, ?_⟩
+      refine ⟨?_, ?_, ?_, ?_, ?_⟩
       · intro i idx e hget h2
         rw [crash_chain]
         rw [crash_full] at hget ⊢
         exact h.logs i idx e hget h2
+      · intro i T n ps lg hm idx e hget hidx
+        rw [crash_snapLogs] at hm; rw [crash_chain]
+        exact h.snaps i T n ps lg hm idx e hget hidx
       · intro src dst t l pi pt es lc n e hp hn h2
         rw [crash_sent] at hp; rw [crash_chain]
         exact h.msgs src dst t l pi pt es lc n e hp hn h2
@@ -397,11 +447,14 @@ theorem chInv_step {members : List Nat} {w w' : World σ κ}
         rw [crash_chain] at h₁ h₂; exact h.det idx e p₁ p₂ h₁ h₂
   | compact k hk =>
       -- the logical log does not move, and no ghost record does either
-      refine ⟨?_, ?_, ?_, ?_⟩
+      refine ⟨?_, ?_, ?_, ?_, ?_⟩
       · intro i idx e hget h2
         rw [compactAt_chain]
         rw [compactAt_full] at hget ⊢
         exact h.logs i idx e hget h2
+      · intro i T n ps lg hm idx e hget hidx
+        rw [compactAt_snapLogs] at hm; rw [compactAt_chain]
+        exact h.snaps i T n ps lg hm idx e hget hidx
       · intro src dst t l pi pt es lc n e hp hn h2
         rw [compactAt_sent] at hp; rw [compactAt_chain]
         exact h.msgs src dst t l pi pt es lc n e hp hn h2

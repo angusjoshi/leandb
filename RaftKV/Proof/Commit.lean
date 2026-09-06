@@ -200,7 +200,7 @@ theorem ackRecorded_step {members : List Nat} {w w' : World σ κ}
       have hm : msg = Msg.appendEntriesResp T true m := by
         have := congrArg (fun q => q.2.2) heq; simpa using this.symm
       subst hm; subst hpj
-      refine ⟨fullStep (w.nodes p) (w.full p) ev, List.mem_append_right _ ?_⟩
+      refine ⟨fullStep w p ev, List.mem_append_right _ ?_⟩
       unfold ackOf
       exact List.mem_append_left _
         (List.mem_filterMap.mpr ⟨Action.send to (Msg.appendEntriesResp T true m), hact, rfl⟩)
@@ -770,9 +770,9 @@ theorem commitQuorum_step {members : List Nat} {w w' : World σ κ}
             cases hq : LogStore.get (Protocol.step (w.nodes L) ev).1.log c with
             | none => rw [hq] at hct; simp at hct
             | some z => exact ((LogStore.get_isSome_iff _ c).mp (by rw [hq]; rfl)).2
-          refine ⟨LogStore.lastIndex (fullStep (w.nodes L) (w.full L) ev),
-            fullStep (w.nodes L) (w.full L) ev, ?_, ?_⟩
-          · have hself := ackOf_self (i := L) (fl := fullStep (w.nodes L) (w.full L) ev)
+          refine ⟨LogStore.lastIndex (fullStep w L ev),
+            fullStep w L ev, ?_, ?_⟩
+          · have hself := ackOf_self (i := L) (fl := fullStep w L ev)
               (acts := (Protocol.step (w.nodes L) ev).2) e6
             rw [← e2] at hself
             exact List.mem_append_right _ hself

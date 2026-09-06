@@ -80,7 +80,7 @@ theorem ack_term_le {members : List Nat} {w : World σ κ}
 
 /-- A freshly recorded acknowledgement carries the node's post-state term. -/
 theorem fresh_ack_term {w : World σ κ} {v T m : Nat} {lgp : σ} {ev : Event}
-    (h : (v, T, m, lgp) ∈ ackOf v (Protocol.step (w.nodes v) ev).1 (fullStep (w.nodes v) (w.full v) ev)
+    (h : (v, T, m, lgp) ∈ ackOf v (Protocol.step (w.nodes v) ev).1 (fullStep w v ev)
             (Protocol.step (w.nodes v) ev).2) :
     ((w.act v ev).nodes v).currentTerm = T := by
   rw [act_nodes_self]
@@ -94,7 +94,7 @@ theorem fresh_ack_term {w : World σ κ} {v T m : Nat} {lgp : σ} {ev : Event}
 /-- A node that records an acknowledgement has spent its vote for that term. -/
 theorem fresh_ack_voted {members : List Nat} {w : World σ κ}
     {v T m : Nat} {lgp : σ} {ev : Event} (hr' : Reachable members (w.act v ev))
-    (h : (v, T, m, lgp) ∈ ackOf v (Protocol.step (w.nodes v) ev).1 (fullStep (w.nodes v) (w.full v) ev)
+    (h : (v, T, m, lgp) ∈ ackOf v (Protocol.step (w.nodes v) ev).1 (fullStep w v ev)
             (Protocol.step (w.nodes v) ev).2) :
     ((w.act v ev).nodes v).votedFor ≠ none := by
   rcases mem_ackOf_cases h with ⟨to0, hact, _, _⟩ | ⟨hlead, _, _, _, _⟩
@@ -358,7 +358,7 @@ theorem changeAttributed_step {members : List Nat} {w w' : World σ κ}
               rw [Protocol.step, handleClientReq, if_neg (by rw [hpre]; simp)]
               dsimp only; simp [hpre]
             refine ⟨v, (Protocol.step (w.nodes v) ev).1.currentTerm,
-              fullStep (w.nodes v) (w.full v) ev, ?_, by omega, Nat.le_refl _, ?_, ?_, rfl⟩
+              fullStep w v ev, ?_, by omega, Nat.le_refl _, ?_, ?_, rfl⟩
             · rw [act_leaderLogs]
               exact List.mem_append_right _ (leaderLogOf_self hleadp)
             · intro _
@@ -409,7 +409,7 @@ theorem changeAttributed_step {members : List Nat} {w w' : World σ κ}
             · rw [hl]
               exact splice_agrees hnd hr' hwfV.mono hwfS.mono hpi hchk hS3 hS2 hwfNew k hkm
           · -- beyond it: either nothing changed, or the log ends where the sender's does
-            by_cases hsome : (LogStore.get (fullStep (w.nodes v) (w.full v) (Event.recv src
+            by_cases hsome : (LogStore.get (fullStep w v (Event.recv src
                 (Msg.appendEntries term l pi pt es lc))) k).isSome
             · have hun := appendFrom_above_unchanged es (w.full v) (pi + 1) k hbound
                 (by omega) (by omega) (by rw [← hl]; exact hsome)
@@ -444,9 +444,9 @@ theorem changeAttributed_step {members : List Nat} {w w' : World σ κ}
               · intro _
                 rw [Protocol.step]
                 exact handleAppendEntries_votedFor_ne _ _ _ _ _ _ _ _ hct
-              have h1 : LogStore.get (fullStep (w.nodes v) (w.full v) (Event.recv src
+              have h1 : LogStore.get (fullStep w v (Event.recv src
                   (Msg.appendEntries term l pi pt es lc))) k = none := by
-                cases hq : LogStore.get (fullStep (w.nodes v) (w.full v) (Event.recv src
+                cases hq : LogStore.get (fullStep w v (Event.recv src
                     (Msg.appendEntries term l pi pt es lc))) k with
                 | none => rfl
                 | some z => exfalso; rw [hq] at hsome; exact hsome rfl
@@ -632,7 +632,7 @@ theorem voteAttributed_step {members : List Nat} {w w' : World σ κ}
       obtain ⟨to1, hgact, hvj, hlgeq⟩ :
           ∃ to1, Action.send to1 (Msg.requestVoteResp U true)
               ∈ (Protocol.step (w.nodes j) ev).2
-            ∧ v = j ∧ lgv = fullStep (w.nodes j) (w.full j) ev := by
+            ∧ v = j ∧ lgv = fullStep w j ev := by
         unfold voteLogOf at hv'
         rcases List.mem_filterMap.mp hv' with ⟨a, ha, heq⟩
         cases a with
@@ -657,7 +657,7 @@ theorem voteAttributed_step {members : List Nat} {w w' : World σ κ}
         rw [Protocol.step] at hgact
         obtain ⟨_, h2, _, _, _⟩ := handleRequestVote_grant hgact
         rw [Protocol.step]; exact h2.symm
-      have hlogsame : fullStep (w.nodes v) (w.full v) ev = w.full v := by
+      have hlogsame : fullStep w v ev = w.full v := by
         rw [hev1]; rfl
       rcases List.mem_append.mp hack with ha' | ha'
       · obtain ⟨X, tX, lgX, h1, h2, h3, h5, h6, h4⟩ := hca v T m lgp ha' k hk
@@ -837,7 +837,7 @@ theorem electedTermLt_step {members : List Nat} {w w' : World σ κ}
     · exact h X U lgel h'
     · obtain ⟨h1, h2, h3, h4, h5⟩ := mem_electedOf h'
       subst h1
-      have hlogpre : fullStep (w.nodes X) (w.full X) ev = w.full X :=
+      have hlogpre : fullStep w X ev = w.full X :=
         leader_full_unchanged h4 h5
       have hgoal : LogStore.lastTerm lgel = LogStore.lastTerm (w.full X) := by
         rw [h3]; exact congrArg LogStore.lastTerm hlogpre

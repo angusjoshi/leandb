@@ -269,8 +269,9 @@ theorem led_full_stable {members : List Nat} {w w' : World σ κ} [LawfulLogStor
     by_cases hij : i = j
     · subst hij
       rw [act_full_self]
-      rcases full_step (w.nodes i) (w.full i) ev with hl | ⟨rid, cmd, _, _, hl⟩ |
-        ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩
+      rcases world_full_step w i ev with hl | ⟨rid, cmd, _, _, hl⟩ |
+        ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩ |
+        ⟨src, term, lid, lastIdx, anchor, pairs, hev, hi, hct⟩
       · exact Or.inl hl
       · exact Or.inr ⟨_, hl⟩
       · exfalso
@@ -285,6 +286,20 @@ theorem led_full_stable {members : List Nat} {w w' : World σ κ} [LawfulLogStor
         have hsi : src = i := everWinner_unique hnd hr hwin (hold ▸ hwon)
         subst hsi
         exact hp.notSelf (src, src, Msg.appendEntries term l pi pt es lc) hpkt (by simp)
+      · -- a snapshot in the node's own term could only have come from itself
+        exfalso
+        subst hev
+        have hterm : term = t := by
+          rw [act_nodes_self, Protocol.step, handleInstallSnapshot_term_eq] at hnew
+          omega
+        subst hterm
+        have hpkt := hdel src (Msg.installSnapshot term lid lastIdx anchor pairs) rfl
+        have hwin : WonTerm members w src term :=
+          hp.snapWinner src i term lid lastIdx anchor pairs hpkt
+        have hsi : src = i := everWinner_unique hnd hr hwin (hold ▸ hwon)
+        subst hsi
+        exact hp.notSelf (src, src, Msg.installSnapshot term lid lastIdx anchor pairs) hpkt
+          (by simp)
     · rw [act_full_ne _ _ _ hij]; exact Or.inl rfl
   cases hs with
   | deliver s d m hd hmem =>

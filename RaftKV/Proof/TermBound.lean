@@ -288,7 +288,7 @@ theorem chainSorted_step {members : List Nat} {w w' : World σ κ}
     · exact h idx e p h'
     · obtain ⟨hlead, hidx, hterm, rid, cmd, hev⟩ := mem_chainOf h'
       -- the recorded predecessor is an entry of the same leader, whose terms are bounded
-      cases hq : LogStore.get (fullStep (w.nodes j) (w.full j) ev) (idx - 1) with
+      cases hq : LogStore.get (fullStep w j ev) (idx - 1) with
       | none =>
           have : p = 0 := by
             unfold chainOf at h'

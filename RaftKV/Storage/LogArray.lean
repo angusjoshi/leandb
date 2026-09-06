@@ -46,6 +46,7 @@ instance : LogStore ArrayLog where
   compact s i :=
     let j := max (s.base + 1) (min i (s.base + s.entries.size))
     ⟨j - 1, s.entries.extract (j - 1 - s.base) s.entries.size⟩
+  fromAnchor i e := ⟨i - 1, #[e]⟩
 
 /-- The model: a hole for every discarded index, then the entries held. -/
 def model (s : ArrayLog) : List (Option Entry) :=
@@ -154,6 +155,14 @@ instance : LawfulLogStore ArrayLog where
     by_cases hb : i - 1 ≤ s.base
     · rw [if_pos hb]; show i - 1 + 1 = _; omega
     · rw [if_neg hb]; show s.base + 1 = _; omega
+  model_fromAnchor := by
+    intro i e
+    show model ⟨i - 1, #[e]⟩ = _
+    rfl
+  first_fromAnchor := by
+    intro i e
+    show i - 1 + 1 = max 1 i
+    omega
   first_compact := by
     intro s i h1 h2
     have hi' : s.base + 1 ≤ i := h1

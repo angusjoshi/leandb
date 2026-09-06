@@ -25,7 +25,7 @@ variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 
 theorem act_voteLogs (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).voteLogs
-      = w.voteLogs ++ voteLogOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev)
+      = w.voteLogs ++ voteLogOf j (Protocol.step (w.nodes j) ev).1 (fullStep w j ev)
           (Protocol.step (w.nodes j) ev).2 := rfl
 
 theorem voteLog_mono {w : World σ κ} {j : Nat} {ev : Event} {v U : Nat} {lg : σ}
@@ -104,7 +104,7 @@ theorem voteDom_step {members : List Nat} {w w' : World σ κ}
                     rw [upToDate] at h4
                     simp only [Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq,
                       beq_iff_eq] at h4
-                    have hfl : fullStep (w.nodes j) (w.full j)
+                    have hfl : fullStep w j
                         (Event.recv src (Msg.requestVote term candId li lt)) = w.full j := rfl
                     have hli : LogStore.lastIndex (w.full j)
                         = LogStore.lastIndex (w.nodes j).log := full_lastIndex hr j

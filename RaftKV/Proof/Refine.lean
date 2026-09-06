@@ -212,7 +212,7 @@ theorem smRefines_snap {members : List Nat} {w : World σ κ}
         intro j ev hw hdel
         subst hw
         have hlog : ∀ i, i = j → ∀ k, k ≤ (w0.nodes i).lastApplied →
-            LogStore.get (fullStep (w0.nodes i) (w0.full i) ev) k
+            LogStore.get (fullStep w0 i ev) k
               = LogStore.get (w0.full i) k := by
           intro i hij; subst hij
           exact step_log_below_applied hnd hr (j := i) (ev := ev) hdel
@@ -225,13 +225,13 @@ theorem smRefines_snap {members : List Nat} {w : World σ κ}
             rcases step_kv_shape (w0.nodes i) ev with ⟨hkv, hla⟩ | ⟨s', h1, h2, h3, h4, h5⟩
             · rw [hkv, hla, cmdsUpTo_congr _ hlg]
               exact ih.1 i
-            · have hs' : AppliedModel (fullStep (w0.nodes i) (w0.full i) ev) s' := by
+            · have hs' : AppliedModel (fullStep w0 i ev) s' := by
                 unfold AppliedModel
                 rw [h1, h2, cmdsUpTo_congr _ hlg]
                 exact ih.1 i
               have hbr : ∀ k, LogStore.firstIndex s'.log ≤ k →
                   LogStore.get s'.log k
-                    = LogStore.get (fullStep (w0.nodes i) (w0.full i) ev) k := by
+                    = LogStore.get (fullStep w0 i ev) k := by
                 rw [h3]
                 intro k hk
                 have := full_get hr1 (i := i) (k := k) (by rw [act_nodes_self]; exact hk)
@@ -319,7 +319,7 @@ needs: a step may splice the log, but never below what has already been applied.
 theorem step_appliedModel_pre {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (hrch : Reachable members w) {j : Nat} {ev : Event}
     (hdel : ∀ src m', ev = Event.recv src m' → (src, j, m') ∈ w.sent) :
-    AppliedModel (fullStep (w.nodes j) (w.full j) ev) (w.nodes j) := by
+    AppliedModel (fullStep w j ev) (w.nodes j) := by
   unfold AppliedModel
   rw [cmdsUpTo_congr (lg₂ := w.full j) _ (step_log_below_applied hnd hrch hdel)]
   exact smRefines_reachable hnd hrch j

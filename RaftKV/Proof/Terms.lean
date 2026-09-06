@@ -63,7 +63,9 @@ theorem handleAppendEntriesResp_term (s : NodeState σ κ)
   · rename_i h; simp; omega
   · split
     · exact Nat.le_refl _
-    · split <;> simp
+    · split
+      · simp
+      · simp
 
 theorem handleClientReq_term (s : NodeState σ κ) (rid : Nat) (c : Command) :
     (handleClientReq s rid c).1.currentTerm = s.currentTerm := by
@@ -141,7 +143,33 @@ theorem handleAppendEntriesResp_term_eq (s : NodeState σ κ)
   · rename_i h
     split
     · simp; omega
-    · split <;> simp <;> omega
+    · split
+      · simp; omega
+      · simp; omega
+
+/-- The snapshot handler, too, leaves the term at `max`. -/
+theorem handleInstallSnapshot_term_eq (s : NodeState σ κ)
+    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String)) :
+    (handleInstallSnapshot s term leaderId lastIdx a ps).1.currentTerm
+      = max s.currentTerm term := by
+  rw [handleInstallSnapshot]
+  split
+  · rename_i h; simp; omega
+  · dsimp only
+    have h := maybeStepDown_term s term (some leaderId)
+    split <;> simp [h]
+
+/--
+**Accepting a snapshot spends the term's vote**, exactly as accepting entries
+does. Both are leader contact, and the attribution argument needs both to count.
+-/
+theorem handleInstallSnapshot_votedFor_ne (s : NodeState σ κ)
+    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String))
+    (h : s.currentTerm ≤ term) :
+    (handleInstallSnapshot s term leaderId lastIdx a ps).1.votedFor ≠ none := by
+  rw [handleInstallSnapshot, if_neg (by omega)]
+  dsimp only
+  split <;> simp
 
 /--
 **Terms are monotone.** No event can lower a replica's `currentTerm`.
@@ -155,6 +183,8 @@ theorem step_term_mono (s : NodeState σ κ) (ev : Event) :
       | requestVoteResp t g => exact handleRequestVoteResp_term s t g src
       | appendEntries t l pi pt es lc => exact handleAppendEntries_term s src t l pi pt es lc
       | appendEntriesResp t ok mi => exact handleAppendEntriesResp_term s src t ok mi
+      | installSnapshot t l li a ps =>
+          rw [Protocol.step, handleInstallSnapshot_term_eq]; omega
   | clientReq rid c => rw [Protocol.step, handleClientReq_term]; exact Nat.le_refl _
   | electionTimeout =>
       show s.currentTerm ≤ (if s.role == Role.leader then (s, []) else startElection s).1.currentTerm

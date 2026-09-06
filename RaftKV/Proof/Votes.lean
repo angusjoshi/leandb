@@ -57,6 +57,11 @@ theorem step_cfg (s : NodeState σ κ) (ev : Event) : (Protocol.step s ev).1.cfg
           · split
             · rfl
             · split <;> simp
+      | installSnapshot term l li a ps =>
+          rw [Protocol.step, handleInstallSnapshot]
+          split
+          · rfl
+          · dsimp only; split <;> simp
   | clientReq rid c =>
       rw [Protocol.step, handleClientReq]
       split
@@ -138,6 +143,19 @@ theorem votedFor_step (s : NodeState σ κ) (ev : Event) (c : Nat)
             split
             · exact hv
             · split <;> simpa using hv
+      | installSnapshot term l li a ps =>
+          by_cases hgt : term > s.currentTerm
+          · right
+            rw [Protocol.step, handleInstallSnapshot_term_eq]; omega
+          · left
+            rw [Protocol.step, handleInstallSnapshot]
+            split
+            · exact hv
+            · have hmsd : (maybeStepDown s term (some l)).1 = s := by
+                rw [maybeStepDown, if_neg hgt]
+              dsimp only
+              rw [hmsd]
+              split <;> simp [hv]
   | clientReq rid c' =>
       left
       rw [Protocol.step, handleClientReq]

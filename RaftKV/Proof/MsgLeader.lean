@@ -72,7 +72,7 @@ theorem msgFromLeaderLog_step {members : List Nat} {w w' : World σ κ}
             (PeerMap.get (Protocol.step (w.nodes src) ev).1.nextIndex p0
               (LogStore.lastIndex (Protocol.step (w.nodes src) ev).1.log + 1)) :=
         Nat.le_trans (LogStore.firstIndex_le_sendFloor _) (Nat.le_max_left _ _)
-      refine ⟨fullStep (w.nodes src) (w.full src) ev, ?_, ?_, ?_, ?_⟩
+      refine ⟨fullStep w src ev, ?_, ?_, ?_, ?_⟩
       · rw [act_leaderLogs]
         refine List.mem_append_right _ ?_
         rw [← hterm]
@@ -307,8 +307,8 @@ theorem ackAgrees_step {members : List Nat} {w w' : World σ κ}
       obtain ⟨src, l, pi, pt, es, lc, hev, hm, hlog, hpi0, hchk0, hfw, hacc, _, _⟩ :=
         step_ack_shape hact
       -- cross to the logical log, where the invariant lives
-      have hfull : fullStep (w.nodes v) (w.full v) ev = appendFrom (w.full v) (pi + 1) es := by
-        subst hev; rw [fullStep, if_pos hacc]
+      have hfull : fullStep w v ev = appendFrom (w.full v) (pi + 1) es := by
+        subst hev; rw [fullStep_node _ _ _ (by simp [Event.isSnapRecv]), nodeFullStep, if_pos hacc]
       have hpi : pi ≤ LogStore.lastIndex (w.full v) := by
         rw [full_lastIndex hr v]; exact hpi0
       have hchk : pi ≠ 0 → LogStore.termAt (w.full v) pi = some pt :=
