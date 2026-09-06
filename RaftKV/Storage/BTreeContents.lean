@@ -932,3 +932,250 @@ theorem insert_wf {t t' : Tree} {pages : Pages} {m : List (Nat × ByteArray)}
   exact ⟨d', Nat.lt_of_le_of_lt hle hd, hden⟩
 
 end RaftKV.BTree
+
+namespace RaftKV.BTree
+
+/-! ## Deletion
+
+Simpler than insertion in every way: nothing splits, so the depth is unchanged
+and the rebuilt branch has the same shape. Nothing is merged either — a node may
+be left underfull, which the invariant permits because it says nothing about how
+full a node is.
+-/
+
+theorem eraseRec_mem {m : List (Nat × ByteArray)} {k : Nat} {kv : Nat × ByteArray} :
+    kv ∈ eraseRec m k → kv ∈ m := by
+  induction m with
+  | nil => intro h; exact h
+  | cons a m ih =>
+      intro h
+      rw [eraseRec] at h
+      split at h
+      · exact List.mem_cons_of_mem _ h
+      · rcases List.mem_cons.mp h with h' | h'
+        · exact h' ▸ List.mem_cons_self ..
+        · exact List.mem_cons_of_mem _ (ih h')
+
+theorem eraseRec_sorted {m : List (Nat × ByteArray)} {k : Nat}
+    (h : Sorted m) : Sorted (eraseRec m k) := by
+  induction m with
+  | nil => exact List.Pairwise.nil
+  | cons a m ih =>
+      obtain ⟨ha, hm⟩ := List.pairwise_cons.mp h
+      rw [eraseRec]
+      split
+      · exact hm
+      · exact List.pairwise_cons.mpr ⟨fun b hb => ha b (eraseRec_mem hb), ih hm⟩
+
+theorem eraseRec_append_left {a b : List (Nat × ByteArray)} {k : Nat}
+    (h : ∀ kv ∈ a, kv.1 < k) : eraseRec (a ++ b) k = a ++ eraseRec b k := by
+  induction a with
+  | nil => rfl
+  | cons x a ih =>
+      have hx : x.1 < k := h x (List.mem_cons_self ..)
+      rw [List.cons_append, eraseRec, if_neg (by simp; exact (Nat.ne_of_lt hx).symm)]
+      rw [ih (fun kv hkv => h kv (List.mem_cons_of_mem _ hkv))]
+      rfl
+
+theorem eraseRec_none {b : List (Nat × ByteArray)} {k : Nat}
+    (h : ∀ kv ∈ b, k < kv.1) : eraseRec b k = b := by
+  induction b with
+  | nil => rfl
+  | cons x b ih =>
+      have hx : k < x.1 := h x (List.mem_cons_self ..)
+      rw [eraseRec, if_neg (by simp; exact Nat.ne_of_lt hx)]
+      rw [ih (fun kv hkv => h kv (List.mem_cons_of_mem _ hkv))]
+
+theorem eraseRec_append_right {a b : List (Nat × ByteArray)} {k : Nat}
+    (h : ∀ kv ∈ b, k < kv.1) : eraseRec (a ++ b) k = eraseRec a k ++ b := by
+  induction a with
+  | nil => rw [List.nil_append, eraseRec_none h]; rfl
+  | cons x a ih =>
+      rw [List.cons_append, eraseRec, eraseRec]
+      split
+      · rfl
+      · rw [ih]; rfl
+
+/-- Rebuilding a branch after its search-path child was rewritten. -/
+theorem chain_erase {pages₀ pages : Pages} {lim₀ lim d k : Nat}
+    (hf : ∀ q, q < lim₀ → pages q = pages₀ q) (hl : lim₀ ≤ lim) {q : Nat} :
+    ∀ {lo hi : Option Nat} {ks cs : List Nat} {m : List (Nat × ByteArray)},
+      Chain pages₀ lim₀ d lo hi ks cs m →
+      (∀ lo' hi' c mi, cs[cidx ks k]? = some c → Denote pages₀ lim₀ d lo' hi' c mi →
+        Denote pages lim d lo' hi' q (eraseRec mi k)) →
+      Chain pages lim d lo hi ks (setAt cs (cidx ks k) q) (eraseRec m k) := by
+  intro lo hi ks
+  induction ks generalizing lo with
+  | nil =>
+    intro cs m hc hchild
+    cases hc with
+    | @one _ c _ _ m hd => exact .one (hchild lo hi c m rfl hd)
+  | cons s ks ih =>
+    intro cs m hc hchild
+    cases hc with
+    | @cons _ _ c _ _ _ cs mc ms hd hs hrest =>
+      by_cases hsk : s ≤ k
+      · have hcidx : cidx (s :: ks) k = cidx ks k + 1 := by simp [cidx, hsk, Nat.add_comm]
+        have hsplit : eraseRec (mc ++ ms) k = mc ++ eraseRec ms k :=
+          eraseRec_append_left (fun kv hkv =>
+            Nat.lt_of_lt_of_le (denote_range _ hd kv hkv).2 hsk)
+        rw [hcidx, hsplit]
+        exact .cons (denote_frame hf hl _ hd) hs
+          (ih hrest (fun lo' hi' c' mi hc' hden =>
+            hchild lo' hi' c' mi (by rw [hcidx]; simpa using hc') hden))
+      · have hks' : List.filter (fun s => decide (s ≤ k)) ks = [] := by
+          rw [List.filter_eq_nil_iff]
+          intro x hx
+          simp only [decide_eq_true_eq]
+          exact Nat.not_le.mpr (Nat.lt_of_lt_of_le (Nat.not_le.mp hsk) (chain_keys hrest x hx).1)
+        have hcidx : cidx (s :: ks) k = 0 := by simp [cidx, hsk, hks']
+        have hsplit : eraseRec (mc ++ ms) k = eraseRec mc k ++ ms :=
+          eraseRec_append_right (fun kv hkv =>
+            Nat.lt_of_lt_of_le (Nat.not_le.mp hsk)
+              (chain_range (fun _ _ x m' hx => denote_range _ hx) hrest kv hkv).1)
+        rw [hcidx, hsplit]
+        exact .cons (hchild lo (some s) c mc (by rw [hcidx]; rfl) hd) hs
+          (chain_frame (fun _ _ x m' hx => denote_frame hf hl _ hx) hrest)
+
+/-- **P4 for deletion, at the level of one descent.** -/
+theorem eraseAux_correct {t : Tree} {pages₀ : Pages} {lim₀ : Nat} (ht : t.next = lim₀)
+    {k : Nat} :
+    ∀ (fuel : Nat) {d : Nat},
+    ∀ {lo hi : Option Nat} {p : Nat} {m : List (Nat × ByteArray)} {a a' : Alloc} {q : Nat},
+      Denote pages₀ lim₀ d lo hi p m → Alloc.Grows lim₀ a →
+      eraseAux t pages₀ k fuel p a = some (q, a') →
+      Denote (patch pages₀ a'.writes) a'.next d lo hi q (eraseRec m k) := by
+  intro fuel
+  induction fuel with
+  | zero => intro _ _ _ _ _ _ _ _ _ _ h; exact absurd h (by simp [eraseAux])
+  | succ fuel ih =>
+    intro d lo hi p m a a' q hden hg h
+    rw [eraseAux] at h
+    cases hden with
+    | @leaf p recs lo hi hp hpage hs hr =>
+        rw [get_of_lt ht hp, hpage] at h
+        dsimp only at h
+        injection h with h; injection h with h1 h2
+        subst h1; subst h2
+        refine Denote.leaf (Nat.lt_succ_self _) (patch_push pages₀ a _)
+          (by rw [List.toList_toArray]; exact eraseRec_sorted hs) ?_
+        rw [List.toList_toArray]
+        exact fun kv hkv => hr kv (eraseRec_mem hkv)
+    | @branch d' p keys children lo hi m hp hpage hchain =>
+        rw [get_of_lt ht hp, hpage] at h
+        dsimp only at h
+        split at h
+        · exact absurd h (by simp)
+        · rename_i c hchild
+          have hcidx : children.toList[cidx keys.toList k]? = some c := by
+            rw [Array.getElem?_toList, ← childIndex_cidx]; exact hchild
+          split at h
+          · exact absurd h (by simp)
+          · rename_i q2 a2 hrec
+            injection h with h; injection h with h1 h2
+            subst h1; subst h2
+            have hg2 : Alloc.Grows lim₀ a2 := eraseAux_grows fuel c hrec hg
+            have hext : Alloc.Extends a2 (a2.push (Node.branch keys
+                (setAt children.toList (childIndex keys k) q2).toArray)).2 :=
+              Alloc.extends_push
+            have hframe : ∀ x, x < a2.next →
+                patch pages₀ (a2.push (Node.branch keys
+                  (setAt children.toList (childIndex keys k) q2).toArray)).2.writes x
+                  = patch pages₀ a2.writes x := patch_extends hext
+            have hb2 : ∀ x, x < lim₀ → patch pages₀ a2.writes x = pages₀ x :=
+              patch_below a2.writes (fun w hw => (hg2.mem w hw).1)
+            have hce := chain_erase (q := q2) hb2 hg2.le hchain
+              (fun lo' hi' c' mi hc' hden' => by
+                have : c' = c := by rw [hcidx] at hc'; injection hc' with he; exact he.symm
+                subst this
+                exact ih hden' hg hrec)
+            refine Denote.branch (Nat.lt_succ_self _) (patch_push pages₀ a2 _) ?_
+            rw [List.toList_toArray, List.toList_toArray]
+            exact chain_frame (fun _ _ x m' hx => denote_frame hframe hext.le _ hx) hce
+
+/-- **P4 for deletion.** The binding goes, the depth does not change. -/
+theorem erase_correct {t t' : Tree} {pages : Pages} {m : List (Nat × ByteArray)}
+    {k : Nat} {ws : List (Nat × Node)} {d : Nat}
+    (hwf : WFd t pages d m) (h : t.erase pages k = some (t', ws)) :
+    WFd t' (patch pages ws) d (eraseRec m k) := by
+  unfold WFd at hwf
+  unfold Tree.erase at h
+  split at h
+  · rename_i he
+    rw [he] at hwf
+    subst hwf
+    injection h with h; injection h with h1 h2
+    subst h1; subst h2
+    unfold WFd
+    rw [he]
+    rfl
+  · rename_i r he
+    rw [he] at hwf
+    split at h
+    · exact absurd h (by simp)
+    · rename_i q a hrec
+      injection h with h; injection h with h1 h2
+      subst h1; subst h2
+      exact eraseAux_correct rfl maxDepth hwf (Alloc.grows_init _) hrec
+
+/-- Deletion keeps the tree inside the search fuel. -/
+theorem erase_wf {t t' : Tree} {pages : Pages} {m : List (Nat × ByteArray)}
+    {k : Nat} {ws : List (Nat × Node)}
+    (hwf : WF t pages m) (h : t.erase pages k = some (t', ws)) :
+    WF t' (patch pages ws) (eraseRec m k) := by
+  obtain ⟨d, hd, hden⟩ := hwf
+  exact ⟨d, hd, erase_correct hden h⟩
+
+end RaftKV.BTree
+
+namespace RaftKV.BTree
+
+/--
+**The B-tree, end to end.**
+
+One commit, and everything the four properties give, in one statement. Starting
+from a tree holding `m`:
+
+1. the new root cell reads back `m` with `k ↦ v` inserted — every key, and the
+   whole ordered scan (P4);
+2. and *whatever the crash did*, the old root cell reads back `m` unchanged.
+   Any image agreeing with the pre-commit one below the old high-water mark, so
+   arbitrary garbage in the whole range the commit was allocating; any subset of
+   the commit's page writes having reached the platter, in any order (P1–P3).
+
+Clause 2 is the one that matters for durability: the commit point is the root
+cell, and until it moves the tree on disk is exactly the tree that was there
+before, byte for byte. Clause 1 is what makes the store worth committing to.
+-/
+theorem insert_commit {t t' : Tree} {pages : Pages} {m : List (Nat × ByteArray)}
+    {k : Nat} {v : ByteArray} {ws : List (Nat × Node)} {d : Nat}
+    (hwf : WFd t pages d m) (hd : d + 1 < maxDepth)
+    (h : t.insert pages k v = some (t', ws)) :
+    (∀ k', t'.lookup (patch pages ws) k' = lookupList (insertRec m k v) k')
+      ∧ t'.toList (patch pages ws) = insertRec m k v
+      ∧ ∀ (g : Pages), (∀ q, q < t.next → g q = pages q) →
+          ∀ (ws' : List (Nat × Node)), (∀ w ∈ ws', w ∈ ws) →
+            (∀ k', t.lookup (patch g ws') k' = lookupList m k')
+              ∧ t.toList (patch g ws') = m := by
+  have hwf' : WF t' (patch pages ws) (insertRec m k v) := insert_wf hwf hd h
+  have hold : WF t pages m := ⟨d, Nat.lt_of_succ_lt hd, hwf⟩
+  refine ⟨fun k' => lookup_correct hwf', toList_correct hwf', fun g hg ws' hsub => ?_⟩
+  obtain ⟨hl, ht⟩ := insert_crash_safe h g hg ws' hsub
+  exact ⟨fun k' => (hl k').trans (lookup_correct hold), ht.trans (toList_correct hold)⟩
+
+/-- The same for a delete. -/
+theorem erase_commit {t t' : Tree} {pages : Pages} {m : List (Nat × ByteArray)}
+    {k : Nat} {ws : List (Nat × Node)}
+    (hwf : WF t pages m) (h : t.erase pages k = some (t', ws)) :
+    (∀ k', t'.lookup (patch pages ws) k' = lookupList (eraseRec m k) k')
+      ∧ t'.toList (patch pages ws) = eraseRec m k
+      ∧ ∀ (g : Pages), (∀ q, q < t.next → g q = pages q) →
+          ∀ (ws' : List (Nat × Node)), (∀ w ∈ ws', w ∈ ws) →
+            (∀ k', t.lookup (patch g ws') k' = lookupList m k')
+              ∧ t.toList (patch g ws') = m := by
+  have hwf' : WF t' (patch pages ws) (eraseRec m k) := erase_wf hwf h
+  refine ⟨fun k' => lookup_correct hwf', toList_correct hwf', fun g hg ws' hsub => ?_⟩
+  obtain ⟨hl, ht⟩ := erase_crash_safe h g hg ws' hsub
+  exact ⟨fun k' => (hl k').trans (lookup_correct hwf), ht.trans (toList_correct hwf)⟩
+
+end RaftKV.BTree

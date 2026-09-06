@@ -25,7 +25,8 @@ range — the old root reads back exactly the tree it read before, bit for bit.
 **P4 — Search agrees with the contents.** `lookup` returns what was inserted;
 insertion and deletion change the contents by exactly one binding and preserve
 the ordering invariant that makes search work at all. This is the `correct` law,
-and it is where a B-tree earns its name rather than its durability.
+and it is where a B-tree earns its name rather than its durability. Proved in
+`RaftKV/Storage/BTreeContents.lean`.
 
 The split is not an accident of what was easy. P1–P3 are statements about *where
 bytes go*, and a bug in them silently destroys committed data. P4 is a statement
