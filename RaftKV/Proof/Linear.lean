@@ -26,11 +26,12 @@ variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 
 @[simp] theorem act_commits (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).commits
-      = w.commits ++ commitOf j (w.nodes j) (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) := rfl
+      = w.commits ++ commitOf j (w.nodes j) (Protocol.step (w.nodes j) ev).1
+          (fullStep (w.nodes j) (w.full j) ev) := rfl
 
 @[simp] theorem act_created' (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).created
-      = w.created ++ createdOf j (Protocol.step (w.nodes j) ev).1 ev := rfl
+      = w.created ++ createdOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) ev := rfl
 
 @[simp] theorem act_hist (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).hist
@@ -41,11 +42,11 @@ variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 
 @[simp] theorem act_createTime (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).createTime
-      = w.createTime ++ createTimeOf j (Protocol.step (w.nodes j) ev).1 ev w.clock := rfl
+      = w.createTime ++ createTimeOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) ev w.clock := rfl
 
 @[simp] theorem act_commitTime (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).commitTime
-      = w.commitTime ++ commitTimeOf j (w.nodes j) (Protocol.step (w.nodes j) ev).1 w.clock := rfl
+      = w.commitTime ++ commitTimeOf j (w.nodes j) (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) w.clock := rfl
 
 /-! ## Replies come only from applying committed entries -/
 
@@ -186,20 +187,27 @@ variable [LawfulKVStore κ]
 **Every reply the apply-loop emits is the sequential specification's answer**,
 computed on the commands at indices `1 … n-1`, for the command at `n`.
 -/
-theorem applyLoop_reply (f : Nat) (s : NodeState σ κ) (acc : List Action)
-    (hmod : AppliedModel s) {n rid : Nat} {r : Reply}
+theorem applyLoop_reply (fl : σ) (f : Nat) (s : NodeState σ κ) (acc : List Action)
+    (hbr : ∀ k, LogStore.firstIndex s.log ≤ k → LogStore.get s.log k = LogStore.get fl k)
+    (hfa : LogStore.firstIndex s.log ≤ s.lastApplied + 1)
+    (hmod : AppliedModel fl s) {n rid : Nat} {r : Reply}
     (h : Action.reply n rid r ∈ (applyLoop f s acc).2) :
     Action.reply n rid r ∈ acc
-      ∨ (∃ e, LogStore.get s.log n = some e ∧ e.reqId = rid
+      ∨ (∃ e, LogStore.get fl n = some e ∧ e.reqId = rid
           ∧ 1 ≤ n ∧ n ≤ s.commitIndex
-          ∧ r = (Spec.applyCmd (Spec.run (cmdsUpTo s.log (n - 1))) e.cmd).2) := by
+          ∧ r = (Spec.applyCmd (Spec.run (cmdsUpTo fl (n - 1))) e.cmd).2) := by
   induction f generalizing s acc with
   | zero => rw [applyLoop] at h; exact Or.inl h
   | succ f ih =>
       rw [applyLoop] at h
       split at h
       · rename_i hlt
-        rcases ih (applyOne s).1 (acc ++ (applyOne s).2) (applyOne_refines s hmod) h with h' | h'
+        have hlog0 : (applyOne s).1.log = s.log := applyOne_log s
+        have hla0 : s.lastApplied ≤ (applyOne s).1.lastApplied := applyOne_lastApplied_ge s
+        rcases ih (applyOne s).1 (acc ++ (applyOne s).2)
+          (fun k hk => by rw [hlog0] at hk ⊢; exact hbr k hk)
+          (by rw [hlog0]; omega)
+          (applyOne_refines fl s hbr hfa hmod) h with h' | h'
         · rcases List.mem_append.mp h' with h'' | h''
           · exact Or.inl h''
           · -- this very entry was just applied
@@ -220,7 +228,8 @@ theorem applyLoop_reply (f : Nat) (s : NodeState σ κ) (acc : List Action)
                       have h1 : n = s.lastApplied + 1 := (Action.reply.inj hz').1
                       have h2 : rid = e.reqId := (Action.reply.inj hz').2.1
                       have h3 : r = rep := (Action.reply.inj hz').2.2
-                      refine ⟨e, by rw [h1]; exact hq, h2.symm, by omega, by omega, ?_⟩
+                      refine ⟨e, by rw [h1, ← hbr _ hfa]; exact hq, h2.symm, by omega,
+                        by omega, ?_⟩
                       have hrep : rep = (Spec.applyCmd (LawfulKVStore.toModel s.kv) e.cmd).2 := by
                         have := KVStore.applyCmd_reply s.kv e.cmd
                         rw [hkv] at this; exact this
@@ -230,41 +239,47 @@ theorem applyLoop_reply (f : Nat) (s : NodeState σ κ) (acc : List Action)
                     · intro hz; simp at hz
         · right
           obtain ⟨e, he1, he2, he3, he4, he5⟩ := h'
-          have hlog : (applyOne s).1.log = s.log := applyOne_log s
           have hci : (applyOne s).1.commitIndex = s.commitIndex := applyOne_commitIndex s
-          rw [hlog] at he1 he5
           rw [hci] at he4
           exact ⟨e, he1, he2, he3, he4, he5⟩
       · exact Or.inl h
 
-theorem applyCommitted_reply (s : NodeState σ κ) (hmod : AppliedModel s)
+theorem applyCommitted_reply (fl : σ) (s : NodeState σ κ)
+    (hbr : ∀ k, LogStore.firstIndex s.log ≤ k → LogStore.get s.log k = LogStore.get fl k)
+    (hfa : LogStore.firstIndex s.log ≤ s.lastApplied + 1)
+    (hmod : AppliedModel fl s)
     {n rid : Nat} {r : Reply} (h : Action.reply n rid r ∈ (applyCommitted s).2) :
-    ∃ e, LogStore.get s.log n = some e ∧ e.reqId = rid
+    ∃ e, LogStore.get fl n = some e ∧ e.reqId = rid
       ∧ 1 ≤ n ∧ n ≤ s.commitIndex
-      ∧ r = (Spec.applyCmd (Spec.run (cmdsUpTo s.log (n - 1))) e.cmd).2 := by
-  rcases applyLoop_reply _ s [] hmod h with h' | h'
+      ∧ r = (Spec.applyCmd (Spec.run (cmdsUpTo fl (n - 1))) e.cmd).2 := by
+  rcases applyLoop_reply fl _ s [] hbr hfa hmod h with h' | h'
   · simp at h'
   · exact h'
 
 /--
 **Every reply a step emits is the specification's answer at a committed index.**
 -/
-theorem step_reply (s : NodeState σ κ) (ev : Event)
-    (hpre : AppliedModel ({ s with log := (Protocol.step s ev).1.log } : NodeState σ κ))
+theorem step_reply (fl : σ) (s : NodeState σ κ) (ev : Event)
+    (hbr : ∀ k, LogStore.firstIndex (Protocol.step s ev).1.log ≤ k →
+      LogStore.get (Protocol.step s ev).1.log k = LogStore.get fl k)
+    (hfa : LogStore.firstIndex s.log ≤ s.lastApplied + 1)
+    (hpre : AppliedModel fl s)
     {n rid : Nat} {r : Reply} (h : Action.reply n rid r ∈ (Protocol.step s ev).2) :
-    ∃ e, LogStore.get (Protocol.step s ev).1.log n = some e ∧ e.reqId = rid
+    ∃ e, LogStore.get fl n = some e ∧ e.reqId = rid
       ∧ 1 ≤ n ∧ n ≤ (Protocol.step s ev).1.commitIndex
-      ∧ r = (Spec.applyCmd
-              (Spec.run (cmdsUpTo (Protocol.step s ev).1.log (n - 1))) e.cmd).2 := by
+      ∧ r = (Spec.applyCmd (Spec.run (cmdsUpTo fl (n - 1))) e.cmd).2 := by
   obtain ⟨s₀, hpost, hkv, hla, hmem⟩ := reply_from_applyCommitted h
   have hlog : (Protocol.step s ev).1.log = s₀.log := by rw [hpost]; simp
   have hci : (Protocol.step s ev).1.commitIndex = s₀.commitIndex := by rw [hpost]; simp
-  have hmod : AppliedModel s₀ := by
+  have hmod : AppliedModel fl s₀ := by
     unfold AppliedModel at hpre ⊢
-    rw [hkv, hla, ← hlog]
+    rw [hkv, hla]
     exact hpre
-  obtain ⟨e, h1, h2, h3, h4, h5⟩ := applyCommitted_reply s₀ hmod hmem
-  exact ⟨e, by rw [hlog]; exact h1, h2, h3, by rw [hci]; exact h4, by rw [hlog]; exact h5⟩
+  obtain ⟨e, h1, h2, h3, h4, h5⟩ := applyCommitted_reply fl s₀
+    (fun k hk => by rw [← hlog] at hk ⊢; exact hbr k hk)
+    (by rw [hla, ← hlog, step_firstIndex]; exact hfa)
+    hmod hmem
+  exact ⟨e, h1, h2, h3, by rw [hci]; exact h4, h5⟩
 
 end Lawful
 
@@ -354,17 +369,18 @@ theorem mem_histOf_invoke {i t : Nat} {ev : Event} {acts : List Action}
       · exact absurd h' (by simp)
       · exact absurd h' not_mem_replyMap
 
-theorem mem_createTimeOf {i t : Nat} {s : NodeState σ κ} {ev : Event} {e : Entry} {t' : Nat}
-    (h : (e, t') ∈ createTimeOf i s ev t) :
-    t' = t ∧ ∃ c k, (c, k, e) ∈ createdOf i s ev := by
+theorem mem_createTimeOf {i t : Nat} {s : NodeState σ κ} {fl : σ} {ev : Event}
+    {e : Entry} {t' : Nat}
+    (h : (e, t') ∈ createTimeOf i s fl ev t) :
+    t' = t ∧ ∃ c k, (c, k, e) ∈ createdOf i s fl ev := by
   rcases List.mem_map.mp h with ⟨r, hr, heq⟩
   have h1 : r.2.2 = e := congrArg (fun p => p.1) heq
   have h2 : t = t' := congrArg (fun p => p.2) heq
   exact ⟨h2.symm, r.1, r.2.1, by rw [← h1]; exact hr⟩
 
-theorem mem_commitTimeOf {i t : Nat} {pre post : NodeState σ κ} {c : Nat} {lg : σ} {t' : Nat}
-    (h : (c, lg, t') ∈ commitTimeOf i pre post t) :
-    t' = t ∧ ∃ L T Q, (L, T, c, lg, Q) ∈ commitOf i pre post := by
+theorem mem_commitTimeOf {i t : Nat} {pre post : NodeState σ κ} {c : Nat} {lg fl : σ} {t' : Nat}
+    (h : (c, lg, t') ∈ commitTimeOf i pre post fl t) :
+    t' = t ∧ ∃ L T Q, (L, T, c, lg, Q) ∈ commitOf i pre post fl := by
   rcases List.mem_map.mp h with ⟨r, hr, heq⟩
   have h1 : r.2.2.1 = c := congrArg (fun p => p.1) heq
   have h2 : r.2.2.2.1 = lg := congrArg (fun p => p.2.1) heq
@@ -389,7 +405,9 @@ theorem commit_covers {members : List Nat} {w : World σ κ}
     cases hq : LogStore.get lg k with
     | none =>
         exfalso
-        have := (LogStore.get_isSome_iff lg k).mpr ⟨h1, by omega⟩
+        have hnc : LogStore.firstIndex lg = 1 :=
+          ((snapWF_reachable hnd hrch).1 L T c lg Q hc).nocompact
+        have := (LogStore.get_isSome_iff lg k).mpr ⟨by omega, by omega⟩
         rw [hq] at this; exact Bool.noConfusion this
     | some e => exact ⟨e, rfl⟩
   exact ⟨e, he, L, c, lg, Q, hc, h2, he⟩
@@ -409,8 +427,8 @@ theorem committed_prefix_agree {members : List Nat} {w : World σ κ}
 
 
 /-- A minted entry records the very request that was submitted. -/
-theorem createdOf_event {i j k : Nat} {e : Entry} {s : NodeState σ κ} {ev : Event}
-    (h : (i, k, e) ∈ createdOf j s ev) : ev = Event.clientReq e.reqId e.cmd := by
+theorem createdOf_event {i j k : Nat} {e : Entry} {s : NodeState σ κ} {fl : σ} {ev : Event}
+    (h : (i, k, e) ∈ createdOf j s fl ev) : ev = Event.clientReq e.reqId e.cmd := by
   unfold createdOf at h
   cases ev with
   | clientReq rid cmd =>
@@ -546,8 +564,8 @@ theorem lInv_step {members : List Nat} {w w' : World σ κ}
       · obtain ⟨ht, L, T, Q, hcm⟩ := mem_commitTimeOf h'
         subst ht
         obtain ⟨_, _, _, hlg, _, _, _⟩ := mem_commitOf hcm
-        have hnode : ((w.act j ev).nodes j).log = lg := by
-          rw [act_nodes_self]; exact hlg.symm
+        have hnode : ((w.act j ev).full j) = lg := by
+          rw [act_full_self]; exact hlg.symm
         obtain ⟨c₀, hc₀⟩ := (wf_node hnd hr' j).created k e (by rw [hnode]; exact hget)
         obtain ⟨t', h1, h2⟩ := hct c₀ k e hc₀
         rw [act_clock] at h2
@@ -563,35 +581,44 @@ theorem lInv_step {members : List Nat} {w w' : World σ κ}
     · obtain ⟨htt, hij, hact⟩ := mem_histOf_respond h'
       subst htt; subst hij
       obtain ⟨e, hg, hrid, hn1, hn2, hspec⟩ :=
-        step_reply (w.nodes i) ev (step_appliedModel_pre hnd hr hdel) hact
+        step_reply (fullStep (w.nodes i) (w.full i) ev) (w.nodes i) ev
+          (fun k hk => by
+            have := full_get hr' (i := i) (k := k) (by rw [act_nodes_self]; exact hk)
+            rwa [act_nodes_self, act_full_self] at this)
+          (full_applied hr i)
+          (step_appliedModel_pre hnd hr hdel) hact
       -- the applied entry is committed
       have hnode : ((w.act i ev).nodes i) = (Protocol.step (w.nodes i) ev).1 := act_nodes_self w i ev
+      have hfnode : ((w.act i ev).full i) = fullStep (w.nodes i) (w.full i) ev :=
+        act_full_self w i ev
       obtain ⟨T, hcom, _⟩ := (sInv_reachable hnd hr').cov i n e
-        (by rw [hnode]; exact hn2) (by rw [hnode]; exact hg)
+        (by rw [hnode]; exact hn2) (by rw [hfnode]; exact hg)
       obtain ⟨L, c, lgc, Q, hcm, hnc, hgc⟩ := hcom
       obtain ⟨t', ht1, ht2⟩ := hmt L T c lgc Q hcm
       rw [act_clock] at ht2
       refine ⟨c, lgc, t', e, ht1, by omega, hn1, hnc, hgc, hrid, ?_⟩
       -- the two logs hold the same committed prefix below `n`
       have hagree : ∀ k, k ≤ n - 1 →
-          LogStore.get lgc k = LogStore.get (Protocol.step (w.nodes i) ev).1.log k := by
+          LogStore.get lgc k = LogStore.get (fullStep (w.nodes i) (w.full i) ev) k := by
         refine committed_prefix_agree hnd hr' ?_ ?_
         · intro k hk1 hk2
           obtain ⟨e', hg', hc'⟩ := commit_covers hnd hr' hcm hk1 (by omega)
           exact ⟨e', T, hg', hc'⟩
         · intro k hk1 hk2
-          obtain ⟨e', hg'⟩ : ∃ e', LogStore.get (Protocol.step (w.nodes i) ev).1.log k = some e' := by
-            cases hq : LogStore.get (Protocol.step (w.nodes i) ev).1.log k with
+          obtain ⟨e', hg'⟩ : ∃ e',
+              LogStore.get (fullStep (w.nodes i) (w.full i) ev) k = some e' := by
+            cases hq : LogStore.get (fullStep (w.nodes i) (w.full i) ev) k with
             | none =>
                 exfalso
                 have hb := (sInv_reachable hnd hr').bound i
-                rw [hnode] at hb
-                have := (LogStore.get_isSome_iff (Protocol.step (w.nodes i) ev).1.log k).mpr
-                  ⟨hk1, by omega⟩
+                rw [hfnode, hnode] at hb
+                have := (LogStore.get_isSome_iff
+                  (fullStep (w.nodes i) (w.full i) ev) k).mpr
+                  ⟨by rw [← hfnode, full_firstIndex hr' i]; omega, by omega⟩
                 rw [hq] at this; exact Bool.noConfusion this
             | some e' => exact ⟨e', rfl⟩
           obtain ⟨T', hc', _⟩ := (sInv_reachable hnd hr').cov i k e'
-            (by rw [hnode]; omega) (by rw [hnode]; exact hg')
+            (by rw [hnode]; omega) (by rw [hfnode]; exact hg')
           exact ⟨e', T', hg', hc'⟩
       rw [hspec, cmdsUpTo_congr _ hagree]
   cases hs with
@@ -859,12 +886,14 @@ theorem linearizable {members : List Nat} {w : World σ κ}
         · exfalso
           have hab := appliedBound_reachable hrch i
           have hb := (sInv_reachable hnd hrch).bound i
-          obtain ⟨e, he⟩ : ∃ e, LogStore.get (w.nodes i).log (w.nodes i).lastApplied = some e := by
-            cases hq : LogStore.get (w.nodes i).log (w.nodes i).lastApplied with
+          obtain ⟨e, he⟩ : ∃ e, LogStore.get (w.full i) (w.nodes i).lastApplied = some e := by
+            cases hq : LogStore.get (w.full i) (w.nodes i).lastApplied with
             | none =>
                 exfalso
-                have := (LogStore.get_isSome_iff (w.nodes i).log
-                  (w.nodes i).lastApplied).mpr ⟨h0, by omega⟩
+                have hli := full_lastIndex hrch i
+                have := (LogStore.get_isSome_iff (w.full i)
+                  (w.nodes i).lastApplied).mpr
+                  ⟨by rw [full_firstIndex hrch i]; omega, by omega⟩
                 rw [hq] at this; exact Bool.noConfusion this
             | some e => exact ⟨e, rfl⟩
           obtain ⟨T, hcom, _⟩ :=
@@ -899,14 +928,16 @@ theorem linearizable {members : List Nat} {w : World σ κ}
         intro i
         have hab := appliedBound_reachable hrch i
         have hb := (sInv_reachable hnd hrch).bound i
+        have hli := full_lastIndex hrch i
         have hnodeCov : ∀ k, 1 ≤ k → k ≤ (w.nodes i).lastApplied →
-            ∃ e' T', LogStore.get (w.nodes i).log k = some e' ∧ Protocol.Committed w k e' T' := by
+            ∃ e' T', LogStore.get (w.full i) k = some e' ∧ Protocol.Committed w k e' T' := by
           intro k hk1 hk2
-          obtain ⟨e', he'⟩ : ∃ e', LogStore.get (w.nodes i).log k = some e' := by
-            cases hq : LogStore.get (w.nodes i).log k with
+          obtain ⟨e', he'⟩ : ∃ e', LogStore.get (w.full i) k = some e' := by
+            cases hq : LogStore.get (w.full i) k with
             | none =>
                 exfalso
-                have := (LogStore.get_isSome_iff (w.nodes i).log k).mpr ⟨hk1, by omega⟩
+                have := (LogStore.get_isSome_iff (w.full i) k).mpr
+                  ⟨by rw [full_firstIndex hrch i]; omega, by omega⟩
                 rw [hq] at this; exact Bool.noConfusion this
             | some e' => exact ⟨e', rfl⟩
           obtain ⟨T', hc', _⟩ := (sInv_reachable hnd hrch).cov i k e' (by omega) he'
@@ -923,7 +954,7 @@ theorem linearizable {members : List Nat} {w : World σ κ}
             rw [← this] at hq2
             omega
         have hagree : ∀ k, k ≤ (w.nodes i).lastApplied →
-            LogStore.get lg k = LogStore.get (w.nodes i).log k := by
+            LogStore.get lg k = LogStore.get (w.full i) k := by
           refine committed_prefix_agree hnd hrch ?_ ?_
           · intro k hk1 hk2
             obtain ⟨e', hg', hc'⟩ := hcovE k hk1 (by omega)
