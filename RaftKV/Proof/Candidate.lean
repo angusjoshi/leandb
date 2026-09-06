@@ -272,6 +272,42 @@ theorem candInv_step {members : List Nat} {w w' : World σ κ}
         · subst hck; rw [crash_nodes_self, restart_role] at hrole; exact absurd hrole (by simp)
         · rw [crash_nodes_ne _ _ hck] at hterm hrole ⊢
           exact h.log c d U cid li lt hp hterm hrole
+  | compact k hk =>
+      -- compaction changes neither the advertised log's extent nor the role
+      refine ⟨?_, ?_⟩
+      · intro c d U cid li lt hp
+        rw [compactAt_sent] at hp
+        by_cases hck : c = k
+        · subst hck
+          rw [compactAt_nodes_self, compactTo_currentTerm]
+          exact h.bound c d U cid li lt hp
+        · rw [compactAt_nodes_ne _ _ hck]; exact h.bound c d U cid li lt hp
+      · intro c d U cid li lt hp hterm hrole
+        rw [compactAt_sent] at hp
+        by_cases hck : c = k
+        · subst hck
+          rw [compactAt_nodes_self, compactTo_currentTerm] at hterm
+          rw [compactAt_nodes_self, compactTo_role] at hrole
+          rw [compactAt_nodes_self]
+          obtain ⟨e1, e2⟩ := h.log c d U cid li lt hp hterm hrole
+          refine ⟨?_, ?_⟩
+          · rw [e1, Protocol.compactTo]
+            split
+            · rename_i hg
+              exact (LogStore.lastIndex_compact _ _ hg.1 hg.2).symm
+            · rfl
+          · rw [e2, Protocol.compactTo]
+            split
+            · rename_i hg
+              unfold LogStore.lastTerm LogStore.termAt
+              rw [LogStore.lastIndex_compact _ _ hg.1 hg.2]
+              show _ = (Option.map Entry.term (LogStore.get
+                (LogStore.compact (w.nodes c).log ((w.nodes c).lastApplied + 1))
+                (LogStore.lastIndex (w.nodes c).log))).getD 0
+              rw [LogStore.get_compact_of_le _ _ _ hg.1 hg.2 (by omega)]
+            · rfl
+        · rw [compactAt_nodes_ne _ _ hck] at hterm hrole ⊢
+          exact h.log c d U cid li lt hp hterm hrole
 
 /-- The candidate-advertisement invariants hold in every reachable world. -/
 theorem candInv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :
@@ -351,6 +387,10 @@ theorem rvElected_step {members : List Nat} {w w' : World σ κ}
   | crash k hk =>
       intro c d U cid li lt lg hp hel
       rw [crash_sent] at hp; rw [crash_elected] at hel
+      exact h c d U cid li lt lg hp hel
+  | compact k hk =>
+      intro c d U cid li lt lg hp hel
+      rw [compactAt_sent] at hp; rw [compactAt_elected] at hel
       exact h c d U cid li lt lg hp hel
 
 /-- `RVElected` holds in every reachable world. -/

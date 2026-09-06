@@ -110,6 +110,11 @@ theorem msgFromLeaderLog_step {members : List Nat} {w w' : World σ κ}
       rw [crash_sent] at hp
       obtain ⟨lgL, h1, h2, h3, h4⟩ := h src dst t l pi pt es lc hp
       exact ⟨lgL, by rw [crash_leaderLogs]; exact h1, h2, h3, h4⟩
+  | compact k hk =>
+      intro src dst t l pi pt es lc hp
+      rw [compactAt_sent] at hp
+      obtain ⟨lgL, h1, h2, h3, h4⟩ := h src dst t l pi pt es lc hp
+      exact ⟨lgL, by rw [compactAt_leaderLogs]; exact h1, h2, h3, h4⟩
 
 theorem msgFromLeaderLog_reachable {members : List Nat} {w : World σ κ}
     (h : Reachable members w) : MsgFromLeaderLog w := by
@@ -415,6 +420,11 @@ theorem ackAgrees_step {members : List Nat} {w w' : World σ κ}
       rw [crash_acks] at hm
       obtain ⟨hlen, L, lgL, h1, h2, h3⟩ := h v T m lgp hm
       exact ⟨hlen, L, lgL, by rw [crash_leaderLogs]; exact h1, h2, h3⟩
+  | compact k hk =>
+      intro v T m lgp hm
+      rw [compactAt_acks] at hm
+      obtain ⟨hlen, L, lgL, h1, h2, h3⟩ := h v T m lgp hm
+      exact ⟨hlen, L, lgL, by rw [compactAt_leaderLogs]; exact h1, h2, h3⟩
 
 /-- **Acknowledgements mean agreement, in every reachable world.** -/
 theorem ackAgrees_reachable {members : List Nat} {w : World σ κ}
@@ -468,6 +478,11 @@ theorem commitIsLeaderLog_step {members : List Nat} {w w' : World σ κ}
       rw [crash_commits] at hm
       obtain ⟨h1, h2⟩ := h L T c lg Q hm
       exact ⟨by rw [crash_leaderLogs]; exact h1, h2⟩
+  | compact k hk =>
+      intro L T c lg Q hm
+      rw [compactAt_commits] at hm
+      obtain ⟨h1, h2⟩ := h L T c lg Q hm
+      exact ⟨by rw [compactAt_leaderLogs]; exact h1, h2⟩
 
 theorem commitIsLeaderLog_reachable {members : List Nat} {w : World σ κ}
     (h : Reachable members w) : CommitIsLeaderLog w := by

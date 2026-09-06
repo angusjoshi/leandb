@@ -395,6 +395,20 @@ theorem chInv_step {members : List Nat} {w w' : World σ κ}
         exact h.created idx e p hm
       · intro idx e p₁ p₂ h₁ h₂
         rw [crash_chain] at h₁ h₂; exact h.det idx e p₁ p₂ h₁ h₂
+  | compact k hk =>
+      -- the logical log does not move, and no ghost record does either
+      refine ⟨?_, ?_, ?_, ?_⟩
+      · intro i idx e hget h2
+        rw [compactAt_chain]
+        rw [compactAt_full] at hget ⊢
+        exact h.logs i idx e hget h2
+      · intro src dst t l pi pt es lc n e hp hn h2
+        rw [compactAt_sent] at hp; rw [compactAt_chain]
+        exact h.msgs src dst t l pi pt es lc n e hp hn h2
+      · intro idx e p hm; rw [compactAt_chain] at hm; rw [compactAt_created]
+        exact h.created idx e p hm
+      · intro idx e p₁ p₂ h₁ h₂
+        rw [compactAt_chain] at h₁ h₂; exact h.det idx e p₁ p₂ h₁ h₂
 
 /-- The chain invariants hold in every reachable world. -/
 theorem chInv_reachable {members : List Nat} {w : World σ κ}

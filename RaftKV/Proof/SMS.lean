@@ -40,6 +40,11 @@ theorem committed_crash_mono {w : World σ κ} {i : Nat} {idx T : Nat} {e : Entr
   obtain ⟨L, c, lg, Q, hc, h1, h2⟩ := h
   exact ⟨L, c, lg, Q, by rw [crash_commits]; exact hc, h1, h2⟩
 
+theorem committed_compact_mono {w : World σ κ} {i : Nat} {idx T : Nat} {e : Entry}
+    (h : Protocol.Committed w idx e T) : Protocol.Committed (w.compactAt i) idx e T := by
+  obtain ⟨L, c, lg, Q, hc, h1, h2⟩ := h
+  exact ⟨L, c, lg, Q, by rw [compactAt_commits]; exact hc, h1, h2⟩
+
 /-- **A committed index determines its entry.** -/
 theorem committed_unique {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (hrch : Reachable members w) {idx T₁ T₂ : Nat} {e₁ e₂ : Entry}
@@ -113,6 +118,13 @@ theorem appliedBound_reachable {members : List Nat} {w : World σ κ}
           · subst hik; rw [crash_nodes_self, restart_lastApplied, restart_commitIndex]
             exact Nat.le_refl _
           · rw [crash_nodes_ne _ _ hik]; exact ih i
+      | compact k hk =>
+          intro i
+          by_cases hik : i = k
+          · subst hik
+            rw [compactAt_nodes_self, compactTo_lastApplied, compactTo_commitIndex]
+            exact ih i
+          · rw [compactAt_nodes_ne _ _ hik]; exact ih i
 
 
 /-! ## Commitment bookkeeping -/
@@ -522,6 +534,33 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
         · rw [crash_nodes_ne _ _ hik] at hk' ⊢
           obtain ⟨T', hcom, hT'⟩ := h.cov i k' e hk' hget
           exact ⟨T', committed_crash_mono hcom, hT'⟩
+  | compact k hk =>
+      -- compaction moves neither the commit index nor any ghost record
+      refine ⟨?_, ?_, ?_⟩
+      · intro i
+        rw [compactAt_full]
+        by_cases hik : i = k
+        · subst hik
+          rw [compactAt_nodes_self, compactTo_commitIndex]; exact h.bound i
+        · rw [compactAt_nodes_ne _ _ hik]; exact h.bound i
+      · intro src dst t l pi pt es lc hp
+        rw [compactAt_sent] at hp
+        obtain ⟨lgM, h1, h2, hp2, hp3, hp4, h3⟩ := h.msg src dst t l pi pt es lc hp
+        refine ⟨lgM, by rw [compactAt_leaderLogs]; exact h1, h2, hp2, hp3, hp4, ?_⟩
+        intro k' e hk' hget
+        obtain ⟨T', hcom, hT'⟩ := h3 k' e hk' hget
+        exact ⟨T', committed_compact_mono hcom, hT'⟩
+      · intro i k' e hk' hget
+        rw [compactAt_full] at hget
+        by_cases hik : i = k
+        · subst hik
+          rw [compactAt_nodes_self, compactTo_commitIndex] at hk'
+          rw [compactAt_nodes_self, compactTo_currentTerm]
+          obtain ⟨T', hcom, hT'⟩ := h.cov i k' e hk' hget
+          exact ⟨T', committed_compact_mono hcom, hT'⟩
+        · rw [compactAt_nodes_ne _ _ hik] at hk' ⊢
+          obtain ⟨T', hcom, hT'⟩ := h.cov i k' e hk' hget
+          exact ⟨T', committed_compact_mono hcom, hT'⟩
 
 theorem sInv_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : SInv members w := by

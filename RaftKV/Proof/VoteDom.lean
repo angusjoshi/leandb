@@ -140,6 +140,11 @@ theorem voteDom_step {members : List Nat} {w w' : World σ κ}
       rw [crash_voteLogs] at hm
       obtain ⟨c, li, lt, h1, h2, h3⟩ := h v U lgv hm
       exact ⟨c, li, lt, by rw [crash_sent]; exact h1, by rw [crash_votes]; exact h2, h3⟩
+  | compact k hk =>
+      intro v U lgv hm
+      rw [compactAt_voteLogs] at hm
+      obtain ⟨c, li, lt, h1, h2, h3⟩ := h v U lgv hm
+      exact ⟨c, li, lt, by rw [compactAt_sent]; exact h1, by rw [compactAt_votes]; exact h2, h3⟩
 
 theorem voteDom_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :
     VoteDom w := by

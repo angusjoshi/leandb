@@ -112,6 +112,8 @@ theorem ledInv_step {members : List Nat} {w w' : World σ κ}
           subst h1; rw [act_nodes_self]; exact Nat.le_of_eq h2
     | crash k hk =>
         exact Nat.le_trans (h.bound i t (by rwa [crash_led] at hmem)) (hterm i)
+    | compact k hk =>
+        exact Nat.le_trans (h.bound i t (by rwa [compactAt_led] at hmem)) (hterm i)
   · intro i t hmem heq
     -- A fresh record belongs to a leader; an old one cannot have become a
     -- candidate, since campaigning advances the term.
@@ -147,6 +149,15 @@ theorem ledInv_step {members : List Nat} {w w' : World σ κ}
         · rw [crash_nodes_ne _ _ hij]
           rw [crash_nodes_ne _ _ hij] at heq
           exact h.leads i t (by rwa [crash_led] at hmem) heq
+    | compact k hk =>
+        by_cases hij : i = k
+        · subst hij
+          rw [compactAt_nodes_self, compactTo_role]
+          rw [compactAt_nodes_self, compactTo_currentTerm] at heq
+          exact h.leads i t (by rwa [compactAt_led] at hmem) heq
+        · rw [compactAt_nodes_ne _ _ hij]
+          rw [compactAt_nodes_ne _ _ hij] at heq
+          exact h.leads i t (by rwa [compactAt_led] at hmem) heq
   · intro i t hmem
     have key : ∀ (j : Nat) (ev : Event), w' = w.act j ev → WonTerm members w' i t := by
       intro j ev hw
@@ -168,6 +179,9 @@ theorem ledInv_step {members : List Nat} {w w' : World σ κ}
     | crash k hk =>
         obtain ⟨V, h1, h2, h3, h4⟩ := h.won i t (by rwa [crash_led] at hmem)
         exact ⟨V, h1, h2, h3, fun v hv => by rw [crash_votes]; exact h4 v hv⟩
+    | compact k hk =>
+        obtain ⟨V, h1, h2, h3, h4⟩ := h.won i t (by rwa [compactAt_led] at hmem)
+        exact ⟨V, h1, h2, h3, fun v hv => by rw [compactAt_votes]; exact h4 v hv⟩
   · intro i hlead
     have key : ∀ (j : Nat) (ev : Event), w' = w.act j ev →
         (i, (w'.nodes i).currentTerm) ∈ w'.led := by
@@ -190,6 +204,14 @@ theorem ledInv_step {members : List Nat} {w w' : World σ κ}
         by_cases hij : i = k
         · subst hij; rw [crash_nodes_self, restart_role] at hlead; exact absurd hlead (by simp)
         · rw [crash_nodes_ne _ _ hij] at hlead ⊢; exact h.cur i hlead
+    | compact k hk =>
+        rw [compactAt_led]
+        by_cases hij : i = k
+        · subst hij
+          rw [compactAt_nodes_self, compactTo_role] at hlead
+          rw [compactAt_nodes_self, compactTo_currentTerm]
+          exact h.cur i hlead
+        · rw [compactAt_nodes_ne _ _ hij] at hlead ⊢; exact h.cur i hlead
 
 /-- The leadership records hold in every reachable world. -/
 theorem ledInv_reachable {members : List Nat} {w : World σ κ}
@@ -223,62 +245,6 @@ theorem led_not_candidate_term_gt {members : List Nat} {w : World σ κ}
   · exact h
   · exact absurd hnl (hl.leads i t hmem (Nat.le_antisymm h hb))
 
-
-/--
-**A node that has led term `t` keeps its log for as long as its term is `t`.**
-
-This is the crash-proof replacement for "a recorded leader still leads". A log
-shrinks only by accepting an `appendEntries`, and a same-term payload could only
-have come from the term's winner — which is this node — while no packet is ever
-self-addressed. So nothing can truncate it, whether or not it is still in office.
--/
-theorem led_log_stable {members : List Nat} {w w' : World σ κ} [LawfulLogStore σ]
-    (hnd : members.Nodup) (hr : Reachable members w) (hs : Step members w w') {i t : Nat}
-    (hled : (i, t) ∈ w.led) (hold : (w.nodes i).currentTerm = t)
-    (hnew : (w'.nodes i).currentTerm = t) :
-    (w'.nodes i).log = (w.nodes i).log
-      ∨ ∃ e, (w'.nodes i).log = LogStore.append (w.nodes i).log e := by
-  have hp := pInv_reachable hr
-  have hwon : WonTerm members w i t := (ledInv_reachable hnd hr).won i t hled
-  have key : ∀ (j : Nat) (ev : Event), w' = w.act j ev →
-      (∀ src m', ev = Event.recv src m' → (src, j, m') ∈ w.sent) →
-      (w'.nodes i).log = (w.nodes i).log
-        ∨ ∃ e, (w'.nodes i).log = LogStore.append (w.nodes i).log e := by
-    intro j ev hw hdel
-    subst hw
-    by_cases hij : i = j
-    · subst hij
-      rw [act_nodes_self]
-      rcases step_log (w.nodes i) ev with hl | ⟨rid, cmd, _, hl⟩ |
-        ⟨src, term, l, pi, pt, es, lc, hev, hl, _, _, _, hct⟩
-      · exact Or.inl hl
-      · exact Or.inr ⟨_, hl⟩
-      · exfalso
-        subst hev
-        have hterm : term = t := by
-          rw [act_nodes_self, Protocol.step, handleAppendEntries_term_eq] at hnew
-          omega
-        subst hterm
-        have hpkt := hdel src (Msg.appendEntries term l pi pt es lc) rfl
-        have hwin : WonTerm members w src term := hp.aeWinner src i term l pi pt es lc hpkt
-        have hsi : src = i := everWinner_unique hnd hr hwin (hold ▸ hwon)
-        subst hsi
-        exact hp.notSelf (src, src, Msg.appendEntries term l pi pt es lc) hpkt (by simp)
-    · rw [act_nodes_ne _ _ _ hij]; exact Or.inl rfl
-  cases hs with
-  | deliver s d m hd hmem =>
-      refine key d _ rfl ?_
-      intro src' m' heq
-      have h1 : s = src' := (Event.recv.inj heq).1
-      have h2 : m = m' := (Event.recv.inj heq).2
-      subst h2; subst h1; exact hmem
-  | electionTimeout k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
-  | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
-  | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
-  | crash k hk =>
-      by_cases hij : i = k
-      · subst hij; rw [crash_nodes_self, restart_log]; exact Or.inl rfl
-      · rw [crash_nodes_ne _ _ hij]; exact Or.inl rfl
 
 /--
 The same for the **logical** log: a leader still holding its term has either not
@@ -331,5 +297,6 @@ theorem led_full_stable {members : List Nat} {w w' : World σ κ} [LawfulLogStor
   | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
   | crash k hk => exact Or.inl rfl
+  | compact k hk => exact Or.inl rfl
 
 end RaftKV.Proof

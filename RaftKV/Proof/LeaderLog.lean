@@ -248,6 +248,25 @@ theorem llInv_step {members : List Nat} {w w' : World σ κ}
         rw [crash_created] at hm
         obtain ⟨lg, h1, h2⟩ := h.created c k' e hm
         exact ⟨lg, by rw [crash_leaderLogs]; exact h1, h2⟩
+  | compact k hk =>
+      refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · intro i t lg hm; rw [compactAt_leaderLogs] at hm; rw [compactAt_led]
+        exact h.led i t lg hm
+      · intro i t lg hm; rw [compactAt_leaderLogs] at hm; exact h.nc i t lg hm
+      · intro i t lg hm hterm
+        rw [compactAt_leaderLogs] at hm
+        rw [compactAt_full]
+        by_cases hik : i = k
+        · subst hik
+          rw [compactAt_nodes_self, compactTo_currentTerm] at hterm
+          exact h.pre i t lg hm hterm
+        · rw [compactAt_nodes_ne _ _ hik] at hterm; exact h.pre i t lg hm hterm
+      · intro i t lg₁ lg₂ h₁ h₂
+        rw [compactAt_leaderLogs] at h₁ h₂; exact h.chain i t lg₁ lg₂ h₁ h₂
+      · intro c k' e hm
+        rw [compactAt_created] at hm
+        obtain ⟨lg, h1, h2⟩ := h.created c k' e hm
+        exact ⟨lg, by rw [compactAt_leaderLogs]; exact h1, h2⟩
 
 /-- A node that currently leads has its current log on record. -/
 def LeaderNowRecorded (w : World σ κ) : Prop :=
@@ -284,6 +303,15 @@ theorem leaderNowRecorded_step {members : List Nat} {w w' : World σ κ}
       by_cases hik : i = k
       · subst hik; rw [crash_nodes_self, restart_role] at hlead; exact absurd hlead (by simp)
       · rw [crash_nodes_ne _ _ hik] at hlead ⊢; exact h i hlead
+  | compact k hk =>
+      intro i hlead
+      rw [compactAt_leaderLogs, compactAt_full]
+      by_cases hik : i = k
+      · subst hik
+        rw [compactAt_nodes_self, compactTo_role] at hlead
+        rw [compactAt_nodes_self, compactTo_currentTerm]
+        exact h i hlead
+      · rw [compactAt_nodes_ne _ _ hik] at hlead ⊢; exact h i hlead
 
 theorem leaderNowRecorded_reachable {members : List Nat} {w : World σ κ}
     (h : Reachable members w) : LeaderNowRecorded w := by
@@ -320,6 +348,8 @@ theorem leaderLogWF_step {members : List Nat} {w w' : World σ κ}
   | client k rid cmd hk => exact key k _ rfl
   | crash k hk =>
       intro i t lg hm; rw [crash_leaderLogs] at hm; exact (h i t lg hm).crashMono
+  | compact k hk =>
+      intro i t lg hm; rw [compactAt_leaderLogs] at hm; exact (h i t lg hm).compactMono
 
 theorem leaderLogWF_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : LeaderLogWF w := by
@@ -387,6 +417,11 @@ theorem leaderLogHasElected_step {members : List Nat} {w w' : World σ κ}
       rw [crash_leaderLogs] at hm
       obtain ⟨lgel, h1, h2⟩ := h X U lgX hm
       exact ⟨lgel, by rw [crash_elected]; exact h1, h2⟩
+  | compact k hk =>
+      intro X U lgX hm
+      rw [compactAt_leaderLogs] at hm
+      obtain ⟨lgel, h1, h2⟩ := h X U lgX hm
+      exact ⟨lgel, by rw [compactAt_elected]; exact h1, h2⟩
 
 theorem leaderLogHasElected_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : LeaderLogHasElected w := by

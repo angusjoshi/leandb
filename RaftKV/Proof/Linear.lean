@@ -655,6 +655,30 @@ theorem lInv_step {members : List Nat} {w w' : World σ κ}
         rw [crash_hist] at hm
         obtain ⟨c, lg, t', e, h1, h2, h3, h4, h5, h6, h7⟩ := h.respondCommitted t i rid n r hm
         exact ⟨c, lg, t', e, by rw [crash_commitTime]; exact h1, h2, h3, h4, h5, h6, h7⟩
+  | compact k hk =>
+      -- compaction writes no history either
+      refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
+      · intro c k' e hm
+        rw [compactAt_created] at hm; rw [compactAt_createTime, compactAt_clock]
+        obtain ⟨t, h1, h2⟩ := h.createdTime c k' e hm
+        exact ⟨t, h1, by omega⟩
+      · intro L T c lg Q hm
+        rw [compactAt_commits] at hm; rw [compactAt_commitTime, compactAt_clock]
+        obtain ⟨t, h1, h2⟩ := h.commitsTime L T c lg Q hm
+        exact ⟨t, h1, by omega⟩
+      · intro c lg t hm
+        rw [compactAt_commitTime] at hm; rw [compactAt_commits]
+        exact h.commitTimeIsCommit c lg t hm
+      · intro e t hm
+        rw [compactAt_createTime] at hm; rw [compactAt_hist]
+        exact h.createInvoke e t hm
+      · intro c lg t hm k' e hk1 hk2 hget
+        rw [compactAt_commitTime] at hm; rw [compactAt_createTime]
+        exact h.commitCreate c lg t hm k' e hk1 hk2 hget
+      · intro t i rid n r hm
+        rw [compactAt_hist] at hm
+        obtain ⟨c, lg, t', e, h1, h2, h3, h4, h5, h6, h7⟩ := h.respondCommitted t i rid n r hm
+        exact ⟨c, lg, t', e, by rw [compactAt_commitTime]; exact h1, h2, h3, h4, h5, h6, h7⟩
 
 theorem lInv_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : LInv members w := by

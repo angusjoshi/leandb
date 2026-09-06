@@ -185,6 +185,15 @@ theorem bInv_step {members : List Nat} {w w' : World σ κ}
       · intro src dst t l pi pt es lc n e hp hn
         rw [crash_sent] at hp; rw [crash_created]
         exact h.msgs src dst t l pi pt es lc n e hp hn
+  | compact k hk =>
+      refine ⟨?_, ?_⟩
+      · intro i k' e hget
+        rw [compactAt_created]
+        rw [compactAt_full] at hget
+        exact h.logs i k' e hget
+      · intro src dst t l pi pt es lc n e hp hn
+        rw [compactAt_sent] at hp; rw [compactAt_created]
+        exact h.msgs src dst t l pi pt es lc n e hp hn
 
 /-- The bridge invariants hold in every reachable world. -/
 theorem bInv_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :

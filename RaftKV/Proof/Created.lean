@@ -269,6 +269,21 @@ theorem cInv_step {members : List Nat} {w w' : World σ κ}
         · rw [crash_nodes_ne _ _ hij] at hterm; exact h.inLeader i k' e hm hterm
       · intro i j' k' e₁ e₂ h₁ h₂ hteq
         rw [crash_created] at h₁ h₂; exact h.uniq i j' k' e₁ e₂ h₁ h₂ hteq
+  | compact k hk =>
+      -- compaction mints nothing and moves no field these invariants mention
+      refine ⟨?_, ?_, ?_⟩
+      · intro i k' e hm; rw [compactAt_created] at hm; rw [compactAt_led]
+        exact h.ledRec i k' e hm
+      · intro i k' e hm hterm
+        rw [compactAt_created] at hm
+        rw [compactAt_full]
+        by_cases hij : i = k
+        · subst hij
+          rw [compactAt_nodes_self, compactTo_currentTerm] at hterm
+          exact h.inLeader i k' e hm hterm
+        · rw [compactAt_nodes_ne _ _ hij] at hterm; exact h.inLeader i k' e hm hterm
+      · intro i j' k' e₁ e₂ h₁ h₂ hteq
+        rw [compactAt_created] at h₁ h₂; exact h.uniq i j' k' e₁ e₂ h₁ h₂ hteq
 
 /-- The created-entry invariants hold in every reachable world. -/
 theorem cInv_reachable {members : List Nat} {w : World σ κ}

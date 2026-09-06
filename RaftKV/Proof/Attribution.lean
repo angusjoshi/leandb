@@ -72,6 +72,11 @@ theorem ack_term_le {members : List Nat} {w : World σ κ}
           · subst hvk; rw [crash_nodes_self, restart_currentTerm]
             exact ih (by rwa [crash_acks] at h)
           · rw [crash_nodes_ne _ _ hvk]; exact ih (by rwa [crash_acks] at h)
+      | compact k hk =>
+          by_cases hvk : v = k
+          · subst hvk; rw [compactAt_nodes_self, compactTo_currentTerm]
+            exact ih (by rwa [compactAt_acks] at h)
+          · rw [compactAt_nodes_ne _ _ hvk]; exact ih (by rwa [compactAt_acks] at h)
 
 /-- A freshly recorded acknowledgement carries the node's post-state term. -/
 theorem fresh_ack_term {w : World σ κ} {v T m : Nat} {lgp : σ} {ev : Event}
@@ -263,6 +268,18 @@ theorem ackHold_step {members : List Nat} {w w' : World σ κ}
       · rw [crash_nodes_ne _ _ hvk] at hT
         obtain ⟨L, lgL, h1, h2, h3⟩ := h v T m lgp hm hT
         exact ⟨L, lgL, by rw [crash_leaderLogs]; exact h1, h2, h3⟩
+  | compact k hk =>
+      intro v T m lgp hm hT
+      rw [compactAt_acks] at hm
+      rw [compactAt_full]
+      by_cases hvk : v = k
+      · subst hvk
+        rw [compactAt_nodes_self, compactTo_currentTerm] at hT
+        obtain ⟨L, lgL, h1, h2, h3⟩ := h v T m lgp hm hT
+        exact ⟨L, lgL, by rw [compactAt_leaderLogs]; exact h1, h2, h3⟩
+      · rw [compactAt_nodes_ne _ _ hvk] at hT
+        obtain ⟨L, lgL, h1, h2, h3⟩ := h v T m lgp hm hT
+        exact ⟨L, lgL, by rw [compactAt_leaderLogs]; exact h1, h2, h3⟩
 
 /-- **An acknowledged prefix is held for as long as its term stands.** -/
 theorem ackHold_reachable {members : List Nat} {w : World σ κ}
@@ -481,6 +498,18 @@ theorem changeAttributed_step {members : List Nat} {w w' : World σ κ}
       · rw [crash_nodes_ne _ _ hvk]
         obtain ⟨X, tX, lgX, h1, h2, h3, h5, h6, h4⟩ := h v T m lgp hm k' hk'
         exact ⟨X, tX, lgX, by rw [crash_leaderLogs]; exact h1, h2, h3, h5, h6, h4⟩
+  | compact k hk =>
+      intro v T m lgp hm k' hk'
+      rw [compactAt_acks] at hm
+      rw [compactAt_full]
+      by_cases hvk : v = k
+      · subst hvk
+        rw [compactAt_nodes_self, compactTo_currentTerm, compactTo_votedFor]
+        obtain ⟨X, tX, lgX, h1, h2, h3, h5, h6, h4⟩ := h v T m lgp hm k' hk'
+        exact ⟨X, tX, lgX, by rw [compactAt_leaderLogs]; exact h1, h2, h3, h5, h6, h4⟩
+      · rw [compactAt_nodes_ne _ _ hvk]
+        obtain ⟨X, tX, lgX, h1, h2, h3, h5, h6, h4⟩ := h v T m lgp hm k' hk'
+        exact ⟨X, tX, lgX, by rw [compactAt_leaderLogs]; exact h1, h2, h3, h5, h6, h4⟩
 
 /-- **Change attribution holds in every reachable world.** -/
 theorem changeAttributed_reachable {members : List Nat} {w : World σ κ}
@@ -544,6 +573,13 @@ theorem voteTermLe_step {members : List Nat} {w w' : World σ κ}
       by_cases hvk : v = k
       · subst hvk; rw [crash_nodes_self, restart_currentTerm]; exact h v U lgv hm
       · rw [crash_nodes_ne _ _ hvk]; exact h v U lgv hm
+  | compact k hk =>
+      intro v U lgv hm
+      rw [compactAt_voteLogs] at hm
+      by_cases hvk : v = k
+      · subst hvk
+        rw [compactAt_nodes_self, compactTo_currentTerm]; exact h v U lgv hm
+      · rw [compactAt_nodes_ne _ _ hvk]; exact h v U lgv hm
 
 theorem voteTermLe_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :
     VoteTermLe w := by
@@ -663,6 +699,11 @@ theorem voteAttributed_step {members : List Nat} {w w' : World σ κ}
       rw [crash_acks] at hack; rw [crash_voteLogs] at hvote
       obtain ⟨X, tX, lgX, h1, h2, h3, h5, h4⟩ := h v T m lgp hack U lgv hvote hTU k' hk'
       exact ⟨X, tX, lgX, by rw [crash_leaderLogs]; exact h1, h2, h3, h5, h4⟩
+  | compact k hk =>
+      intro v T m lgp hack U lgv hvote hTU k' hk'
+      rw [compactAt_acks] at hack; rw [compactAt_voteLogs] at hvote
+      obtain ⟨X, tX, lgX, h1, h2, h3, h5, h4⟩ := h v T m lgp hack U lgv hvote hTU k' hk'
+      exact ⟨X, tX, lgX, by rw [compactAt_leaderLogs]; exact h1, h2, h3, h5, h4⟩
 
 /-- **Vote-time attribution holds in every reachable world.** -/
 theorem voteAttributed_reachable {members : List Nat} {w : World σ κ}
@@ -759,6 +800,11 @@ theorem electedAttributed_step {members : List Nat} {w w' : World σ κ}
       rw [crash_acks] at hack; rw [crash_elected] at hel
       obtain ⟨X, tX, lgX, h1, h2, h3, h5, h4⟩ := h v T m lgp hack U lgel hel hTU k' hk'
       exact ⟨X, tX, lgX, by rw [crash_leaderLogs]; exact h1, h2, h3, h5, h4⟩
+  | compact k hk =>
+      intro v T m lgp hack U lgel hel hTU k' hk'
+      rw [compactAt_acks] at hack; rw [compactAt_elected] at hel
+      obtain ⟨X, tX, lgX, h1, h2, h3, h5, h4⟩ := h v T m lgp hack U lgel hel hTU k' hk'
+      exact ⟨X, tX, lgX, by rw [compactAt_leaderLogs]; exact h1, h2, h3, h5, h4⟩
 
 theorem electedAttributed_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : ElectedAttributed w := by
@@ -873,6 +919,8 @@ theorem electedTermLt_step {members : List Nat} {w w' : World σ κ}
   | client k rid cmd hk => exact key k _ rfl
   | crash k hk =>
       intro X U lgel hm; rw [crash_elected] at hm; exact h X U lgel hm
+  | compact k hk =>
+      intro X U lgel hm; rw [compactAt_elected] at hm; exact h X U lgel hm
 
 theorem electedTermLt_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : ElectedTermLt w := by

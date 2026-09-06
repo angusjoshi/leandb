@@ -279,6 +279,27 @@ theorem smRefines_snap {members : List Nat} {w : World σ κ}
                 LawfulKVStore.model_pairs]
               exact ih.2 i
             · rw [crash_nodes_ne _ _ hik]; exact ih.2 i
+      | compact k hk =>
+          -- compaction leaves the state machine and the snapshot exactly where they were
+          refine ⟨fun i => ?_, fun i => ?_⟩
+          · unfold AppliedModel
+            rw [compactAt_full]
+            by_cases hik : i = k
+            · subst hik
+              rw [compactAt_nodes_self, compactTo_kv, compactTo_lastApplied]
+              exact ih.1 i
+            · rw [compactAt_nodes_ne _ _ hik]; exact ih.1 i
+          · rw [compactAt_full]
+            by_cases hik : i = k
+            · subst hik
+              rw [compactAt_nodes_self]
+              show LawfulKVStore.toModel (Protocol.compactTo (w0.nodes i)).snapKV
+                = Spec.run (cmdsUpTo (w0.full i) (Protocol.compactTo (w0.nodes i)).snapIndex)
+              rw [Protocol.compactTo]
+              split
+              · exact ih.1 i
+              · exact ih.2 i
+            · rw [compactAt_nodes_ne _ _ hik]; exact ih.2 i
 
 /--
 **The replicated state machine refines the sequential specification.**

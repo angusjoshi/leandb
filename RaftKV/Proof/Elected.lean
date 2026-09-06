@@ -171,6 +171,27 @@ theorem eInv_step {members : List Nat} {w w' : World σ κ}
           rw [crash_nodes_self, restart_currentTerm] at hterm
           exact h.reaches i t lg hm hterm
         · rw [crash_nodes_ne _ _ hij] at hterm; exact h.reaches i t lg hm hterm
+  | compact k hk =>
+      -- the record and the logical log are both untouched
+      refine ⟨?_, ?_, ?_⟩
+      · intro i t lg hm; rw [compactAt_elected] at hm; rw [compactAt_led]
+        exact h.led i t lg hm
+      · intro i t lg hm hterm k' hk'
+        rw [compactAt_elected] at hm
+        rw [compactAt_full]
+        by_cases hij : i = k
+        · subst hij
+          rw [compactAt_nodes_self, compactTo_currentTerm] at hterm
+          exact h.prefixed i t lg hm hterm k' hk'
+        · rw [compactAt_nodes_ne _ _ hij] at hterm; exact h.prefixed i t lg hm hterm k' hk'
+      · intro i t lg hm hterm
+        rw [compactAt_elected] at hm
+        rw [compactAt_full]
+        by_cases hij : i = k
+        · subst hij
+          rw [compactAt_nodes_self, compactTo_currentTerm] at hterm
+          exact h.reaches i t lg hm hterm
+        · rw [compactAt_nodes_ne _ _ hij] at hterm; exact h.reaches i t lg hm hterm
 
 /-- The election-record invariants hold in every reachable world. -/
 theorem eInv_reachable {members : List Nat} {w : World σ κ}

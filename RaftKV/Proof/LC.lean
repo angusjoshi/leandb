@@ -231,6 +231,9 @@ theorem grantHasVoteLog_step {members : List Nat} {w w' : World σ κ}
   | crash k hk =>
       intro v c t hp
       rw [crash_sent] at hp; rw [crash_voteLogs]; exact h v c t hp
+  | compact k hk =>
+      intro v c t hp
+      rw [compactAt_sent] at hp; rw [compactAt_voteLogs]; exact h v c t hp
 
 theorem grantHasVoteLog_reachable {members : List Nat} {w : World σ κ}
     (h : Reachable members w) : GrantHasVoteLog w := by
@@ -284,6 +287,11 @@ theorem electedQuorum_step {members : List Nat} {w w' : World σ κ}
       rw [crash_elected] at hm
       obtain ⟨V, h1, h2, h3, h4⟩ := h X U lgel hm
       exact ⟨V, h1, h2, h3, fun v hv => (h4 v hv).imp id (fun hq => by rwa [crash_sent])⟩
+  | compact k hk =>
+      intro X U lgel hm
+      rw [compactAt_elected] at hm
+      obtain ⟨V, h1, h2, h3, h4⟩ := h X U lgel hm
+      exact ⟨V, h1, h2, h3, fun v hv => (h4 v hv).imp id (fun hq => by rwa [compactAt_sent])⟩
 
 theorem electedQuorum_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : ElectedQuorum members w := by
@@ -341,6 +349,8 @@ theorem voteLogWF_step {members : List Nat} {w w' : World σ κ}
   | client k rid cmd hk => exact key k _ rfl
   | crash k hk =>
       intro v t lg hm; rw [crash_voteLogs] at hm; exact (h v t lg hm).crashMono
+  | compact k hk =>
+      intro v t lg hm; rw [compactAt_voteLogs] at hm; exact (h v t lg hm).compactMono
 
 theorem voteLogWF_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : VoteLogWF w := by
@@ -377,6 +387,9 @@ theorem electedIsLeaderLog_step {members : List Nat} {w w' : World σ κ}
   | client k rid cmd hk => exact key k _ rfl
   | crash k hk =>
       intro X U lg hm; rw [crash_elected] at hm; rw [crash_leaderLogs]; exact h X U lg hm
+  | compact k hk =>
+      intro X U lg hm; rw [compactAt_elected] at hm; rw [compactAt_leaderLogs]
+      exact h X U lg hm
 
 theorem electedIsLeaderLog_reachable {members : List Nat} {w : World σ κ}
     (h : Reachable members w) : ElectedIsLeaderLog w := by

@@ -27,6 +27,16 @@ theorem WellFormedLog.mono {w : World σ κ} {j : Nat} {ev : Event} {lg : σ}
   chained := fun k e hk h2 => by
     obtain ⟨p, hp1, hp2⟩ := h.chained k e hk h2; exact ⟨p, chain_mono hp1, hp2⟩
 
+/-- Nor does a compaction. -/
+theorem WellFormedLog.compactMono {w : World σ κ} {i : Nat} {lg : σ}
+    (h : WellFormedLog w lg) : WellFormedLog (w.compactAt i) lg where
+  nocompact := h.nocompact
+  created := fun k e hk => by
+    obtain ⟨c, hc⟩ := h.created k e hk; exact ⟨c, by rw [compactAt_created]; exact hc⟩
+  chained := fun k e hk h2 => by
+    obtain ⟨p, hp1, hp2⟩ := h.chained k e hk h2
+    exact ⟨p, by rw [compactAt_chain]; exact hp1, hp2⟩
+
 /-- A crash moves no ghost list, so well-formedness is untouched. -/
 theorem WellFormedLog.crashMono {w : World σ κ} {i : Nat} {lg : σ}
     (h : WellFormedLog w lg) : WellFormedLog (w.crash i) lg where
@@ -152,6 +162,11 @@ theorem snapWF_step {members : List Nat} {w w' : World σ κ}
       · intro L T c lg Q hm; rw [crash_commits] at hm; exact (h.1 L T c lg Q hm).crashMono
       · intro p T m lg hm; rw [crash_acks] at hm; exact (h.2.1 p T m lg hm).crashMono
       · intro i' T lg hm; rw [crash_elected] at hm; exact (h.2.2 i' T lg hm).crashMono
+  | compact k hk =>
+      refine ⟨?_, ?_, ?_⟩
+      · intro L T c lg Q hm; rw [compactAt_commits] at hm; exact (h.1 L T c lg Q hm).compactMono
+      · intro p T m lg hm; rw [compactAt_acks] at hm; exact (h.2.1 p T m lg hm).compactMono
+      · intro i' T lg hm; rw [compactAt_elected] at hm; exact (h.2.2 i' T lg hm).compactMono
 
 theorem snapWF_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : SnapWF w := by
@@ -196,6 +211,8 @@ theorem ackRecorded_step {members : List Nat} {w w' : World σ κ}
   | client k rid cmd hk => exact key k _ rfl
   | crash k hk =>
       intro p d T m hp; rw [crash_sent] at hp; rw [crash_acks]; exact h p d T m hp
+  | compact k hk =>
+      intro p d T m hp; rw [compactAt_sent] at hp; rw [compactAt_acks]; exact h p d T m hp
 
 theorem ackRecorded_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :
     AckRecorded w := by
@@ -458,6 +475,16 @@ theorem miSound_step {members : List Nat} {w w' : World σ κ}
       by_cases hlk : L = k
       · subst hlk; rw [crash_nodes_self, restart_role] at hlead; exact absurd hlead (by simp)
       · rw [crash_nodes_ne _ _ hlk] at hlead hpos ⊢; exact h L p hlead hpos
+  | compact k hk =>
+      intro L p hlead hpos
+      rw [compactAt_sent]
+      by_cases hlk : L = k
+      · subst hlk
+        rw [compactAt_nodes_self, compactTo_role] at hlead
+        rw [compactAt_nodes_self, compactTo_matchIndex] at hpos
+        rw [compactAt_nodes_self, compactTo_currentTerm, compactTo_matchIndex]
+        exact h L p hlead hpos
+      · rw [compactAt_nodes_ne _ _ hlk] at hlead hpos ⊢; exact h L p hlead hpos
 
 /-- **A leader's `matchIndex` is never invented, in any reachable world.** -/
 theorem miSound_reachable {members : List Nat} {w : World σ κ} (h : Reachable members w) :
@@ -770,6 +797,13 @@ theorem commitQuorum_step {members : List Nat} {w w' : World σ κ}
       refine ⟨h1, h2, h3, fun p hp => ?_⟩
       obtain ⟨m0, lgp0, hm0, hc0⟩ := h4 p hp
       exact ⟨m0, lgp0, by rw [crash_acks]; exact hm0, hc0⟩
+  | compact k hk =>
+      intro L T c lg Q hm
+      rw [compactAt_commits] at hm
+      obtain ⟨h1, h2, h3, h4⟩ := h L T c lg Q hm
+      refine ⟨h1, h2, h3, fun p hp => ?_⟩
+      obtain ⟨m0, lgp0, hm0, hc0⟩ := h4 p hp
+      exact ⟨m0, lgp0, by rw [compactAt_acks]; exact hm0, hc0⟩
 
 theorem commitQuorum_reachable {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (h : Reachable members w) : CommitQuorum members w := by
