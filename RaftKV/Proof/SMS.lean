@@ -119,7 +119,7 @@ theorem appliedBound_reachable {members : List Nat} {w : World σ κ}
 
 /-- A node's commit index always points inside its own log. -/
 def CommitBound (w : World σ κ) : Prop :=
-  ∀ i, (w.nodes i).commitIndex ≤ LogStore.lastIndex (w.nodes i).log
+  ∀ i, (w.nodes i).commitIndex ≤ LogStore.lastIndex (w.full i)
 
 /-- What a leader advertises as committed really is committed. -/
 def MsgCommitted (w : World σ κ) : Prop :=
@@ -135,7 +135,7 @@ def MsgCommitted (w : World σ κ) : Prop :=
 
 /-- Everything a node believes committed really is committed. -/
 def AppliedCommitted (w : World σ κ) : Prop :=
-  ∀ i k (e : Entry), k ≤ (w.nodes i).commitIndex → LogStore.get (w.nodes i).log k = some e →
+  ∀ i k (e : Entry), k ≤ (w.nodes i).commitIndex → LogStore.get (w.full i) k = some e →
     ∃ T', Protocol.Committed w k e T' ∧ T' ≤ (w.nodes i).currentTerm
 
 /-- The three commitment invariants, which have to be carried together. -/
@@ -172,28 +172,29 @@ theorem splice_preserves {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (hr : Reachable members w) (h : SInv members w)
     {j src term l pi pt lc : Nat} {es : List Entry}
     (hpkt : (src, j, Msg.appendEntries term l pi pt es lc) ∈ w.sent)
-    (hpi : pi ≤ LogStore.lastIndex (w.nodes j).log)
-    (hchk : pi ≠ 0 → LogStore.termAt (w.nodes j).log pi = some pt)
+    (hpi : pi ≤ LogStore.lastIndex (w.full j))
+    (hchk : pi ≠ 0 → LogStore.termAt (w.full j) pi = some pt)
     (hct : (w.nodes j).currentTerm ≤ term) :
     ∀ k, k ≤ (w.nodes j).commitIndex →
-      LogStore.get (appendFrom (w.nodes j).log (pi + 1) es) k
-        = LogStore.get (w.nodes j).log k := by
+      LogStore.get (appendFrom (w.full j) (pi + 1) es) k
+        = LogStore.get (w.full j) k := by
   have hmsgL := msgFromLeaderLog_reachable hr
   obtain ⟨lgS, hS1, hS2, hS3, hS4⟩ := hmsgL src j term l pi pt es lc hpkt
-  refine appendFrom_match_below es (w.nodes j).log (pi + 1) (w.nodes j).commitIndex
+  refine appendFrom_match_below es (w.full j) (pi + 1) (w.nodes j).commitIndex
     (by omega) ?_
   intro n e hn hle
   have hlen : n < es.length := by
     rcases Nat.lt_or_ge n es.length with hq | hq
     · exact hq
     · exact absurd hn (by rw [List.getElem?_eq_none hq]; simp)
-  have hjl : pi + 1 + n ≤ LogStore.lastIndex (w.nodes j).log := by
+  have hjl : pi + 1 + n ≤ LogStore.lastIndex (w.full j) := by
     have := h.bound j; omega
-  obtain ⟨x, hx⟩ : ∃ x, LogStore.get (w.nodes j).log (pi + 1 + n) = some x := by
-    cases hq : LogStore.get (w.nodes j).log (pi + 1 + n) with
+  obtain ⟨x, hx⟩ : ∃ x, LogStore.get (w.full j) (pi + 1 + n) = some x := by
+    cases hq : LogStore.get (w.full j) (pi + 1 + n) with
     | none =>
         exfalso
-        have := (LogStore.get_isSome_iff (w.nodes j).log (pi + 1 + n)).mpr ⟨by omega, by omega⟩
+        have := (LogStore.get_isSome_iff (w.full j) (pi + 1 + n)).mpr
+          ⟨by rw [full_firstIndex hr j]; omega, by omega⟩
         rw [hq] at this; exact Bool.noConfusion this
     | some x => exact ⟨x, rfl⟩
   refine ⟨x, hx, ?_⟩
@@ -239,89 +240,113 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
     -- a splice never disturbs anything the node already considers committed
     have keeps : ∀ (src term l pi pt lc : Nat) (es : List Entry),
         ev = Event.recv src (Msg.appendEntries term l pi pt es lc) →
-        pi ≤ LogStore.lastIndex (w.nodes j).log →
-        (pi ≠ 0 → LogStore.termAt (w.nodes j).log pi = some pt) →
+        pi ≤ LogStore.lastIndex (w.full j) →
+        (pi ≠ 0 → LogStore.termAt (w.full j) pi = some pt) →
         (w.nodes j).currentTerm ≤ term →
         ∀ k, k ≤ (w.nodes j).commitIndex →
-          LogStore.get (appendFrom (w.nodes j).log (pi + 1) es) k
-            = LogStore.get (w.nodes j).log k := by
+          LogStore.get (appendFrom (w.full j) (pi + 1) es) k
+            = LogStore.get (w.full j) k := by
       intro src term l pi pt lc es hev hpi hchk hct
       exact splice_preserves hnd hr h (hdel src _ hev) hpi hchk hct
     -- the commit index stays inside the log
     have hcb : CommitBound (w.act j ev) := by
       intro i
+      have hbnd : ∀ q, (w.nodes q).commitIndex ≤ LogStore.lastIndex (w.nodes q).log := fun q => by
+        rw [← full_lastIndex hr q]; exact h.bound q
       by_cases hij : i = j
       · subst hij
-        rw [act_nodes_self]
+        rw [act_nodes_self, act_full_self]
         by_cases hae : ∃ (src term l pi pt : Nat) (es : List Entry) (lc : Nat),
             ev = Event.recv src (Msg.appendEntries term l pi pt es lc)
         · obtain ⟨src, term, l, pi, pt, es, lc, hev⟩ := hae
           subst hev
           rw [Protocol.step]
-          rcases handleAppendEntries_shape (s := w.nodes i) (src := src) (term := term)
-              (leaderId := l) (prevIdx := pi) (prevTerm := pt) (es := es) (lc := lc)
-            with ⟨hlg, hci⟩ | ⟨hlg, hci, hpi, hchk, hct⟩
-          · rw [hlg, hci]; exact h.bound i
-          · rw [hlg, hci]
+          by_cases hacc : Protocol.aeAccepts (w.nodes i) term pi pt = true
+          · obtain ⟨hpi0, hchk0, hfw⟩ := aeAccepts_facts hacc
+            rw [handleAppendEntries_commit, if_pos hacc, fullStep, if_pos hacc]
+            have hpi : pi ≤ LogStore.lastIndex (w.full i) := by
+              rw [full_lastIndex hr i]; exact hpi0
+            have hchk : pi ≠ 0 → LogStore.termAt (w.full i) pi = some pt :=
+              fun hz => full_termAt hr (hchk0 hz)
+            have hct := aeAccepts_term hacc
             have hkeep := keeps src term l pi pt lc es rfl hpi hchk hct
+            have hbr := appendFrom_bridge es (w.nodes i).log (w.full i) (pi + 1) hfw
+              (full_firstIndex hr i) (full_lastIndex hr i) (fun k hk => full_get hr hk)
+            rw [hbr.2.1]
             have hb1 : (w.nodes i).commitIndex
-                ≤ LogStore.lastIndex (appendFrom (w.nodes i).log (pi + 1) es) := by
+                ≤ LogStore.lastIndex (appendFrom (w.full i) (pi + 1) es) := by
               rcases Nat.eq_zero_or_pos (w.nodes i).commitIndex with h0 | h0
               · omega
               · obtain ⟨x, hx⟩ : ∃ x,
-                    LogStore.get (w.nodes i).log (w.nodes i).commitIndex = some x := by
-                  cases hq : LogStore.get (w.nodes i).log (w.nodes i).commitIndex with
+                    LogStore.get (w.full i) (w.nodes i).commitIndex = some x := by
+                  cases hq : LogStore.get (w.full i) (w.nodes i).commitIndex with
                   | none =>
                       exfalso
-                      have := (LogStore.get_isSome_iff (w.nodes i).log
-                        (w.nodes i).commitIndex).mpr ⟨by omega, h.bound i⟩
+                      have := (LogStore.get_isSome_iff (w.full i)
+                        (w.nodes i).commitIndex).mpr
+                        ⟨by rw [full_firstIndex hr i]; omega, h.bound i⟩
                       rw [hq] at this; exact Bool.noConfusion this
                   | some x => exact ⟨x, rfl⟩
                 have hq := hkeep (w.nodes i).commitIndex (Nat.le_refl _)
                 rw [hx] at hq
                 exact ((LogStore.get_isSome_iff _ _).mp (by rw [hq]; rfl)).2
             omega
+          · rw [handleAppendEntries_commit, if_neg hacc, fullStep, if_neg hacc]
+            exact h.bound i
         · by_cases hadv : (w.nodes i).commitIndex < (Protocol.step (w.nodes i) ev).1.commitIndex
           · have hlead : (Protocol.step (w.nodes i) ev).1.role = Role.leader := by
               rcases step_commit_advance hadv with hl | ⟨src, term, l, pi, pt, es, lc, hev⟩
               · exact hl
               · exact absurd ⟨src, term, l, pi, pt, es, lc, hev⟩ hae
-            have hct := commit_term_of_step hlead hadv
+            have hct0 := commit_term_of_step hlead hadv
+            have hct := full_termAt hr' (i := i)
+              (k := (Protocol.step (w.nodes i) ev).1.commitIndex)
+              (by rw [act_nodes_self]; exact hct0)
+            rw [act_full_self] at hct
             unfold LogStore.termAt at hct
-            cases hq : LogStore.get (Protocol.step (w.nodes i) ev).1.log
+            cases hq : LogStore.get (fullStep (w.nodes i) (w.full i) ev)
                 (Protocol.step (w.nodes i) ev).1.commitIndex with
             | none => rw [hq] at hct; simp at hct
             | some z => exact ((LogStore.get_isSome_iff _ _).mp (by rw [hq]; rfl)).2
-          · have hlen : LogStore.lastIndex (w.nodes i).log
-                ≤ LogStore.lastIndex (Protocol.step (w.nodes i) ev).1.log := by
-              rcases step_log (w.nodes i) ev with hl | ⟨rid, cmd, _, hl⟩ |
+          · have hlen : LogStore.lastIndex (w.full i)
+                ≤ LogStore.lastIndex (fullStep (w.nodes i) (w.full i) ev) := by
+              rcases full_step (w.nodes i) (w.full i) ev with hl | ⟨rid, cmd, _, _, hl⟩ |
                 ⟨src, term, l, pi, pt, es, lc, hev, _⟩
               · rw [hl]; exact Nat.le_refl _
               · rw [hl, LogStore.lastIndex_append]; omega
               · exact absurd ⟨src, term, l, pi, pt, es, lc, hev⟩ hae
             have := h.bound i
             omega
-      · rw [act_nodes_ne _ _ _ hij]; exact h.bound i
+      · rw [act_nodes_ne _ _ _ hij, act_full_ne _ _ _ hij]; exact h.bound i
     -- everything a node believes committed is committed
     have hcov : AppliedCommitted (w.act j ev) := by
       intro i k e hk hget
       by_cases hij : i = j
       · subst hij
-        rw [act_nodes_self] at hk hget ⊢
+        rw [act_nodes_self] at hk ⊢
+        rw [act_full_self] at hget
         by_cases hae : ∃ (src term l pi pt : Nat) (es : List Entry) (lc : Nat),
             ev = Event.recv src (Msg.appendEntries term l pi pt es lc)
         · obtain ⟨src, term, l, pi, pt, es, lc, hev⟩ := hae
           subst hev
-          rw [Protocol.step] at hk hget ⊢
-          rcases handleAppendEntries_shape (s := w.nodes i) (src := src) (term := term)
-              (leaderId := l) (prevIdx := pi) (prevTerm := pt) (es := es) (lc := lc)
-            with ⟨hlg, hci⟩ | ⟨hlg, hci, hpi, hchk, hct⟩
-          · rw [hlg] at hget; rw [hci] at hk
-            obtain ⟨T', hcom, hT'⟩ := h.cov i k e hk hget
-            refine ⟨T', committed_mono hcom, ?_⟩
-            have := handleAppendEntries_term (w.nodes i) src term l pi pt es lc
-            omega
-          · rw [hlg] at hget; rw [hci] at hk
+          rw [Protocol.step] at hk ⊢
+          rw [fullStep] at hget
+          by_cases hacc : Protocol.aeAccepts (w.nodes i) term pi pt = true
+          · obtain ⟨hpi0, hchk0, hfw⟩ := aeAccepts_facts hacc
+            have hpi : pi ≤ LogStore.lastIndex (w.full i) := by
+              rw [full_lastIndex hr i]; exact hpi0
+            have hchk : pi ≠ 0 → LogStore.termAt (w.full i) pi = some pt :=
+              fun hz => full_termAt hr (hchk0 hz)
+            have hct := aeAccepts_term hacc
+            have hlg : (handleAppendEntries (w.nodes i) src term l pi pt es lc).1.log
+                = appendFrom (w.nodes i).log (pi + 1) es := by
+              rw [handleAppendEntries_accepts, if_pos hacc]
+            have hci : (handleAppendEntries (w.nodes i) src term l pi pt es lc).1.commitIndex
+                = max (w.nodes i).commitIndex
+                  (min lc (LogStore.lastIndex (appendFrom (w.nodes i).log (pi + 1) es))) := by
+              rw [handleAppendEntries_commit, if_pos hacc]
+            rw [if_pos hacc] at hget
+            rw [hci] at hk
             have hterm : (handleAppendEntries (w.nodes i) src term l pi pt es lc).1.currentTerm
                 = term := by rw [handleAppendEntries_term_eq]; omega
             rw [hterm]
@@ -331,14 +356,14 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
               have hpkt := hdel src (Msg.appendEntries term l pi pt es lc) rfl
               obtain ⟨lgM, hM1, hM2, hS2, hS3, hS4, hM3⟩ :=
                 h.msg src i term l pi pt es lc hpkt
-              have hwfV : WellFormedLog w (w.nodes i).log := wf_node hnd hr i
+              have hwfV : WellFormedLog w (w.full i) := wf_node hnd hr i
               have hpre' : pi ≤ LogStore.lastIndex lgM := prev_reach hr hwfV hchk hS3
               have hwfS : WellFormedLog w lgM := leaderLogWF_reachable hnd hr src term lgM hM1
               have hwfNew : WellFormedLog (w.act i
                   (Event.recv src (Msg.appendEntries term l pi pt es lc)))
-                  (appendFrom (w.nodes i).log (pi + 1) es) := by
+                  (appendFrom (w.full i) (pi + 1) es) := by
                 have h0 := wf_node hnd hr' i
-                rw [act_nodes_self, Protocol.step, hlg] at h0
+                rw [act_full_self, fullStep, if_pos hacc] at h0
                 exact h0
               have hsp := splice_agrees hnd hr' hwfV.mono hwfS.mono hpi hchk hS3 hS2 hwfNew
                 k (by omega)
@@ -350,6 +375,13 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
               rw [hkeep] at hget
               obtain ⟨T', hcom, hT'⟩ := h.cov i k e hsmall hget
               exact ⟨T', committed_mono hcom, by omega⟩
+          · -- the payload was refused: nothing moved
+            rw [if_neg hacc] at hget
+            rw [handleAppendEntries_commit, if_neg hacc] at hk
+            obtain ⟨T', hcom, hT'⟩ := h.cov i k e hk hget
+            refine ⟨T', committed_mono hcom, ?_⟩
+            have := handleAppendEntries_term (w.nodes i) src term l pi pt es lc
+            omega
         · by_cases hadv : (w.nodes i).commitIndex < (Protocol.step (w.nodes i) ev).1.commitIndex
           · have hlead : (Protocol.step (w.nodes i) ev).1.role = Role.leader := by
               rcases step_commit_advance hadv with hl | ⟨src, term, l, pi, pt, es, lc, hev⟩
@@ -357,14 +389,14 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
               · exact absurd ⟨src, term, l, pi, pt, es, lc, hev⟩ hae
             refine ⟨(Protocol.step (w.nodes i) ev).1.currentTerm, ?_, Nat.le_refl _⟩
             exact ⟨i, (Protocol.step (w.nodes i) ev).1.commitIndex,
-              (Protocol.step (w.nodes i) ev).1.log,
+              fullStep (w.nodes i) (w.full i) ev,
               replicatedOn (Protocol.step (w.nodes i) ev).1
                 (Protocol.step (w.nodes i) ev).1.commitIndex,
               List.mem_append_right _ (mem_commitOf_self hlead hadv), hk, hget⟩
           · have hk' : k ≤ (w.nodes i).commitIndex := by omega
-            have hunch : LogStore.get (Protocol.step (w.nodes i) ev).1.log k
-                = LogStore.get (w.nodes i).log k := by
-              rcases step_log (w.nodes i) ev with hl | ⟨rid, cmd, _, hl⟩ |
+            have hunch : LogStore.get (fullStep (w.nodes i) (w.full i) ev) k
+                = LogStore.get (w.full i) k := by
+              rcases full_step (w.nodes i) (w.full i) ev with hl | ⟨rid, cmd, _, _, hl⟩ |
                 ⟨src, term, l, pi, pt, es, lc, hev, _⟩
               · rw [hl]
               · rw [hl, LogStore.get_append, if_neg (by have := h.bound i; omega)]
@@ -374,7 +406,8 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
             refine ⟨T', committed_mono hcom, ?_⟩
             have := step_term_mono (w.nodes i) ev
             omega
-      · rw [act_nodes_ne _ _ _ hij] at hk hget ⊢
+      · rw [act_nodes_ne _ _ _ hij] at hk ⊢
+        rw [act_full_ne _ _ _ hij] at hget
         obtain ⟨T', hcom, hT'⟩ := h.cov i k e hk hget
         exact ⟨T', committed_mono hcom, hT'⟩
     -- what a leader advertises is what it believes
@@ -396,29 +429,52 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
       obtain ⟨p0, hp0⟩ := step_appendEntries_payload hact
       simp only [appendEntriesTo] at hp0
       obtain ⟨_, _, hpi, hpt, hes, hlc⟩ := Msg.appendEntries.inj hp0
-      have hni : max 1 (PeerMap.get (Protocol.step (w.nodes src) ev).1.nextIndex p0
+      have hni : max (LogStore.sendFloor (Protocol.step (w.nodes src) ev).1.log)
+          (PeerMap.get (Protocol.step (w.nodes src) ev).1.nextIndex p0
           (LogStore.lastIndex (Protocol.step (w.nodes src) ev).1.log + 1)) = pi + 1 := by
         rw [hpi]
-        have := Nat.le_max_left 1
+        have := Nat.le_max_left (LogStore.sendFloor (Protocol.step (w.nodes src) ev).1.log)
           (PeerMap.get (Protocol.step (w.nodes src) ev).1.nextIndex p0
             (LogStore.lastIndex (Protocol.step (w.nodes src) ev).1.log + 1))
+        have := LogStore.one_le_sendFloor (Protocol.step (w.nodes src) ev).1.log
         omega
-      refine ⟨(Protocol.step (w.nodes src) ev).1.log, ?_, ?_, ?_, ?_, ?_, ?_⟩
+      have hfloor : LogStore.sendFloor (Protocol.step (w.nodes src) ev).1.log ≤ pi + 1 := by
+        rw [← hni]; exact Nat.le_max_left _ _
+      have hfl : LogStore.firstIndex (Protocol.step (w.nodes src) ev).1.log ≤
+          max (LogStore.sendFloor (Protocol.step (w.nodes src) ev).1.log)
+            (PeerMap.get (Protocol.step (w.nodes src) ev).1.nextIndex p0
+              (LogStore.lastIndex (Protocol.step (w.nodes src) ev).1.log + 1)) :=
+        Nat.le_trans (LogStore.firstIndex_le_sendFloor _) (Nat.le_max_left _ _)
+      refine ⟨fullStep (w.nodes src) (w.full src) ev, ?_, ?_, ?_, ?_, ?_, ?_⟩
       · rw [act_leaderLogs]
         exact List.mem_append_right _ (hterm ▸ leaderLogOf_self hlead)
       · have hb := hcb src
-        rw [act_nodes_self] at hb
+        rw [act_nodes_self, act_full_self] at hb
         rw [hlc]; exact hb
       · intro n e hn
         rw [hes] at hn
         have hq := appendEntriesTo_entries (s := (Protocol.step (w.nodes src) ev).1) (p := p0) hn
-        rwa [hni] at hq
-      · rw [hpt, ← hpi]
-      · rw [hes, model_sliceFrom, List.length_drop, hni]
+        rw [hni] at hq
+        have := full_get_of hr' (i := src) (by rw [act_nodes_self]; exact hq)
+        rwa [act_full_self] at this
+      · have hb := full_termAt_getD hr' (i := src) (k := pi) ?_
+        · rw [act_nodes_self, act_full_self] at hb
+          rw [hb, hpt, ← hpi]
+        · rw [act_nodes_self]
+          rcases Nat.eq_zero_or_pos pi with hz | hz
+          · exact Or.inl hz
+          · exact Or.inr (Nat.le_of_lt_succ
+              (LogStore.first_lt_of_sendFloor hfloor (by omega)))
+      · have hlen := congrArg List.length
+          (model_sliceFrom (Protocol.step (w.nodes src) ev).1.log _ hfl)
+        simp only [List.length_map, List.length_drop] at hlen
+        have hli := full_lastIndex hr' (i := src)
+        rw [act_nodes_self, act_full_self] at hli
+        rw [hes, hlen, hni, hli]
         simp [LogStore.lastIndex, model_size]
       · intro k e hk hget
         have hcv := hcov src k e (by rw [act_nodes_self]; omega)
-          (by rw [act_nodes_self]; exact hget)
+          (by rw [act_full_self]; exact hget)
         obtain ⟨T', hcom, hT'⟩ := hcv
         refine ⟨T', hcom, ?_⟩
         rw [act_nodes_self] at hT'
@@ -448,15 +504,15 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
         obtain ⟨T', hcom, hT'⟩ := h3 k' e hk' hget
         exact ⟨T', committed_crash_mono hcom, hT'⟩
       · intro i k' e hk' hget
+        rw [crash_full] at hget
         by_cases hik : i = k
         · exfalso
           subst hik
           rw [crash_nodes_self, restart_commitIndex] at hk'
-          rw [crash_nodes_self, restart_log] at hget
           have hz : k' = 0 := by omega
           rw [hz] at hget
           simp at hget
-        · rw [crash_nodes_ne _ _ hik] at hk' hget ⊢
+        · rw [crash_nodes_ne _ _ hik] at hk' ⊢
           obtain ⟨T', hcom, hT'⟩ := h.cov i k' e hk' hget
           exact ⟨T', committed_crash_mono hcom, hT'⟩
 
@@ -478,16 +534,21 @@ theorem step_log_below_applied {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (hr : Reachable members w) {j : Nat} {ev : Event}
     (hdel : ∀ src m', ev = Event.recv src m' → (src, j, m') ∈ w.sent) :
     ∀ k, k ≤ (w.nodes j).lastApplied →
-      LogStore.get (Protocol.step (w.nodes j) ev).1.log k = LogStore.get (w.nodes j).log k := by
+      LogStore.get (fullStep (w.nodes j) (w.full j) ev) k = LogStore.get (w.full j) k := by
   have hsi := sInv_reachable hnd hr
   have hab := appliedBound_reachable hr
   intro k hk
-  rcases step_log (w.nodes j) ev with hl | ⟨rid, cmd, _, hl⟩ |
-    ⟨src, term, l, pi, pt, es, lc, hev, hl, hpi, hchk, _, hct⟩
+  rcases full_step (w.nodes j) (w.full j) ev with hl | ⟨rid, cmd, _, _, hl⟩ |
+    ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩
   · rw [hl]
   · rw [hl, LogStore.get_append, if_neg (by have := hab j; have := hsi.bound j; omega)]
   · rw [hl]
-    exact splice_preserves hnd hr hsi (hdel src _ hev) hpi hchk hct k
+    obtain ⟨hpi0, hchk0, hfw⟩ := aeAccepts_facts ha
+    have hpi : pi ≤ LogStore.lastIndex (w.full j) := by
+      rw [full_lastIndex hr j]; exact hpi0
+    have hchk : pi ≠ 0 → LogStore.termAt (w.full j) pi = some pt :=
+      fun hz => full_termAt hr (hchk0 hz)
+    exact splice_preserves hnd hr hsi (hdel src _ hev) hpi hchk (aeAccepts_term ha) k
       (Nat.le_trans hk (hab j))
 
 /-- **State Machine Safety.** Two replicas never apply different entries at one index. -/

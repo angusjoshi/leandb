@@ -380,4 +380,27 @@ theorem handleAppendEntries_accepts (s : NodeState σ κ)
     · simp [hac, hlt, hmsd, applyCommitted_log]
 
 
+/-- The companion for the commit index: it moves exactly when the splice happens. -/
+theorem handleAppendEntries_commit (s : NodeState σ κ)
+    (src term leaderId prevIdx prevTerm : Nat) (entries : List Entry) (leaderCommit : Nat) :
+    (handleAppendEntries s src term leaderId prevIdx prevTerm entries leaderCommit).1.commitIndex
+      = if aeAccepts s term prevIdx prevTerm then
+          max s.commitIndex
+            (min leaderCommit (LogStore.lastIndex (appendFrom s.log (prevIdx + 1) entries)))
+        else s.commitIndex := by
+  rw [handleAppendEntries]
+  have hmsd : (maybeStepDown s term (some leaderId)).1.log = s.log := by
+    rw [maybeStepDown]; split <;> rfl
+  have hmsc : (maybeStepDown s term (some leaderId)).1.commitIndex = s.commitIndex := by
+    rw [maybeStepDown]; split <;> rfl
+  unfold aeAccepts
+  split
+  · rename_i hlt
+    rw [if_neg (by simp [hlt])]
+  · rename_i hlt
+    dsimp only
+    cases hac : aeConsistent s prevIdx prevTerm
+    · simp [hac, hmsc]
+    · simp [hac, hlt, hmsd, hmsc]
+
 end RaftKV.Proof

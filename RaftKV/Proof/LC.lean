@@ -53,7 +53,9 @@ theorem ack_agrees_leader {members : List Nat} {w : World σ κ}
         exfalso
         rcases Nat.eq_zero_or_pos c with h0 | h0
         · rw [h0] at hec; simp at hec
-        · have := (LogStore.get_isSome_iff lgp c).mpr ⟨by omega, by omega⟩
+        · have hncp : LogStore.firstIndex lgp = 1 :=
+            ((snapWF_reachable hnd hrch).2.1 p T m lgp hp).nocompact
+          have := (LogStore.get_isSome_iff lgp c).mpr ⟨by omega, by omega⟩
           rw [hq] at this; exact Bool.noConfusion this
     | some ep => exact ⟨ep, rfl⟩
   have hepL : LogStore.get lgL' c = some ep := by rw [← h2 c hcm]; exact hep
@@ -87,13 +89,14 @@ theorem entry_in_leaderLog {members : List Nat} {w : World σ κ}
   exact ⟨c, lgY, h1, h2⟩
 
 /-- Log entries of the last index realise the last term. -/
-theorem lastEntry {lg : σ} (h : 1 ≤ LogStore.lastIndex lg) :
+theorem lastEntry {lg : σ} (hnc : LogStore.firstIndex lg = 1) (h : 1 ≤ LogStore.lastIndex lg) :
     ∃ x : Entry, LogStore.get lg (LogStore.lastIndex lg) = some x
       ∧ x.term = LogStore.lastTerm lg := by
   cases hq : LogStore.get lg (LogStore.lastIndex lg) with
   | none =>
       exfalso
-      have := (LogStore.get_isSome_iff lg (LogStore.lastIndex lg)).mpr ⟨by omega, Nat.le_refl _⟩
+      have := (LogStore.get_isSome_iff lg (LogStore.lastIndex lg)).mpr
+        ⟨by omega, Nat.le_refl _⟩
       rw [hq] at this; exact Bool.noConfusion this
   | some x =>
       exact ⟨x, rfl, by unfold LogStore.lastTerm LogStore.termAt; rw [hq]; rfl⟩
@@ -127,7 +130,10 @@ theorem dominate_carries {members : List Nat} {w : World σ κ}
   have hect : ec.term = T := by
     unfold LogStore.termAt at hcT; rw [hec] at hcT; simpa using hcT
   have hvc : LogStore.get lgv c = some ec := by rw [hv c (Nat.le_refl _)]; exact hec
-  have hc1 : 1 ≤ c := ((LogStore.get_isSome_iff lgv c).mp (by rw [hvc]; rfl)).1
+  have hc1 : 1 ≤ c := by
+    have := ((LogStore.get_isSome_iff lgv c).mp (by rw [hvc]; rfl)).1
+    have := hwfv.nocompact
+    omega
   have hvlen : c ≤ LogStore.lastIndex lgv :=
     ((LogStore.get_isSome_iff lgv c).mp (by rw [hvc]; rfl)).2
   have hvterm : T ≤ LogStore.lastTerm lgv := by
@@ -141,7 +147,7 @@ theorem dominate_carries {members : List Nat} {w : World σ κ}
         omega
       · exact h0
     · omega
-  obtain ⟨xd, hxd, hxdt⟩ := lastEntry (σ := σ) (lg := lgd) hdlen1
+  obtain ⟨xd, hxd, hxdt⟩ := lastEntry (σ := σ) (lg := lgd) hwfd.nocompact hdlen1
   rcases Nat.lt_or_ge T xd.term with hlt | hle
   · -- a strictly later term: its own leader already holds the prefix
     obtain ⟨Y, lgY, hY1, hY3⟩ := entry_in_leaderLog hnd hrch hwfd hxd
@@ -213,7 +219,7 @@ theorem grantHasVoteLog_step {members : List Nat} {w w' : World σ κ}
       have hm : m = Msg.requestVoteResp t true := by
         have := congrArg (fun q => q.2.2) heq; simpa using this.symm
       subst hm; subst hvj
-      refine ⟨(Protocol.step (w.nodes v) ev).1.log, List.mem_append_right _ ?_⟩
+      refine ⟨fullStep (w.nodes v) (w.full v) ev, List.mem_append_right _ ?_⟩
       unfold voteLogOf
       exact List.mem_filterMap.mpr
         ⟨Action.send to (Msg.requestVoteResp t true), hact, rfl⟩
@@ -287,8 +293,8 @@ theorem electedQuorum_reachable {members : List Nat} {w : World σ κ}
 
 /-! ## Vote-log well-formedness -/
 
-theorem mem_voteLogOf {i v t : Nat} {lg : σ} {s : NodeState σ κ} {acts : List Action}
-    (h : (v, t, lg) ∈ voteLogOf i s acts) : v = i ∧ lg = s.log := by
+theorem mem_voteLogOf {i v t : Nat} {lg fl : σ} {s : NodeState σ κ} {acts : List Action}
+    (h : (v, t, lg) ∈ voteLogOf i s fl acts) : v = i ∧ lg = fl := by
   unfold voteLogOf at h
   rcases List.mem_filterMap.mp h with ⟨a, _, heq⟩
   cases a with
@@ -326,7 +332,7 @@ theorem voteLogWF_step {members : List Nat} {w w' : World σ κ}
     rcases List.mem_append.mp hmem with h' | h'
     · exact (h v t lg h').mono
     · obtain ⟨_, h2⟩ := mem_voteLogOf h'
-      have hq : ((w.act j ev).nodes j).log = lg := by rw [act_nodes_self]; exact h2.symm
+      have hq : ((w.act j ev).full j) = lg := by rw [act_full_self]; exact h2.symm
       rw [← hq]; exact wf_node hnd hr' j
   cases hs with
   | deliver s d m hd hm => exact key d _ rfl
