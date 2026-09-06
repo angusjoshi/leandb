@@ -372,17 +372,25 @@ instance {σ : Type} [ByteCodec σ] : ByteCodec (Protocol.Persistent σ) where
     dsimp only
     rw [dec_enc p.log rest]
 
-/-- The array-backed log serialises as its entries. -/
+/--
+The array-backed log serialises as its base offset and the entries it still
+holds — which is the point of compaction: what was discarded is not written.
+-/
 instance : ByteCodec ArrayLog where
-  enc s := enc s.entries.toList
+  enc s := enc s.base ++ enc s.entries.toList
   dec bs :=
-    match (dec bs : Option (List Entry × List UInt8)) with
+    match (dec bs : Option (Nat × List UInt8)) with
     | none => none
-    | some (l, r) => some (⟨l.toArray⟩, r)
+    | some (b, r) =>
+        match (dec r : Option (List Entry × List UInt8)) with
+        | none => none
+        | some (l, r') => some (⟨b, l.toArray⟩, r')
   dec_enc := by
     intro s rest
-    show (match (dec (enc s.entries.toList ++ rest) :
-        Option (List Entry × List UInt8)) with | none => none | some (l, r) => _) = _
+    show (match (dec (enc s.base ++ enc s.entries.toList ++ rest) :
+        Option (Nat × List UInt8)) with | none => none | some (b, r) => _) = _
+    rw [List.append_assoc, dec_enc s.base (enc s.entries.toList ++ rest)]
+    dsimp only
     rw [dec_enc s.entries.toList rest]
 
 end ByteCodec

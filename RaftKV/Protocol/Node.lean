@@ -154,9 +154,13 @@ def applyCommitted (s : NodeState σ κ) : NodeState σ κ × List Action :=
 
 /-- The `AppendEntries` a leader should currently send to `peer`. -/
 def appendEntriesTo (s : NodeState σ κ) (peer : Nat) : Msg :=
-  -- `max 1` keeps the slice start at a valid 1-based index even if `nextIndex`
-  -- were ever driven to zero; index 0 never holds an entry.
-  let ni := max 1 (PeerMap.get s.nextIndex peer (LogStore.lastIndex s.log + 1))
+  -- Clamp the slice start to the send floor: the lowest index whose predecessor
+  -- this node can still name. `sendFloor` is `1` until something has been
+  -- compacted away, so this is the old `max 1` unchanged until the first
+  -- compaction; afterwards it stops the leader from claiming a term for an
+  -- entry it has discarded.
+  let ni := max (LogStore.sendFloor s.log)
+    (PeerMap.get s.nextIndex peer (LogStore.lastIndex s.log + 1))
   let prevIdx := ni - 1
   let prevTerm := (LogStore.termAt s.log prevIdx).getD 0
   .appendEntries s.currentTerm s.cfg.me prevIdx prevTerm (LogStore.sliceFrom s.log ni) s.commitIndex
@@ -248,7 +252,14 @@ def handleAppendEntries (s : NodeState σ κ)
     let downActs := sd.2
     let vf := some (sd.1.votedFor.getD leaderId)
     let s := { sd.1 with role := .follower, leaderHint := some leaderId, votedFor := vf }
-    let consistent := prevIdx == 0 || LogStore.termAt s.log prevIdx == some prevTerm
+    -- The consistency check, plus the requirement that the splice start inside
+    -- the live window. `firstIndex` is `1` until something has been compacted,
+    -- so the second disjunct is the old `prevIdx == 0` case unchanged; once a
+    -- prefix is gone, a payload that would land in it is refused and the leader
+    -- backs off (or, when it too has discarded that far, sends a snapshot).
+    let consistent :=
+      (prevIdx == 0 && LogStore.firstIndex s.log == 1)
+        || LogStore.termAt s.log prevIdx == some prevTerm
     if !consistent then
       (s, downActs ++ [Action.send src (.appendEntriesResp s.currentTerm false 0)])
     else
@@ -275,9 +286,10 @@ def handleAppendEntriesResp (s : NodeState σ κ)
                       nextIndex := PeerMap.set s.nextIndex src (matchIdx + 1) }
     applyCommitted (advanceCommit s)
   else
-    -- Log divergence: back up one index and retry.
+    -- Log divergence: back up one index and retry, but never below the window.
     let ni := PeerMap.get s.nextIndex src (LogStore.lastIndex s.log + 1)
-    let s := { s with nextIndex := PeerMap.set s.nextIndex src (max 1 (ni - 1)) }
+    let s := { s with
+      nextIndex := PeerMap.set s.nextIndex src (max (LogStore.sendFloor s.log) (ni - 1)) }
     (s, [Action.send src (appendEntriesTo s src)])
 
 /-- Accept a client command, or redirect if this node is not the leader. -/
