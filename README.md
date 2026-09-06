@@ -160,6 +160,8 @@ RaftKV/
     NodePersist.lean     the bridge from the store to the model's crash rule
     Crc32.lean           CRC-32, checked against the standard vectors
     BTree.lean           copy-on-write B-tree with checksummed pages
+    BTreeProof.lean      P1-P3: allocation, no overwriting, framing, crash safety
+    BTreeContents.lean   P4: search, scan, insert and delete against the contents
   Runtime/
     Sim.lean             deterministic in-process cluster simulator
     Posix.lean           FFI: open/pread/pwrite/fsync/close (trusted)

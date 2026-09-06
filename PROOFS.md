@@ -531,13 +531,46 @@ CRC is perfectly valid, and only the recorded page number catches it. Tested
 against a flipped bit, a torn write, a lost final sector, and a valid page read
 from the wrong place.
 
-**Deliberately not proved yet.** The checksums are not part of the crash-safety
+**Four properties, proved.** What a storage engine owes the layer above it,
+written down in `RaftKV/Storage/BTreeProof.lean` and
+`RaftKV/Storage/BTreeContents.lean`:
+
+| | Property | Where |
+|---|---|---|
+| **P1** | Allocation is monotone: an update never lowers the high-water mark, writes only pages in `[old mark, new mark)`, and writes no page twice | `insert_grows`, `erase_grows` |
+| **P2** | Nothing reachable from the live root is overwritten — the `fresh` law, immediate from P1 and the reader's refusal to follow a pointer at or above the mark | `insert_crash_safe` |
+| **P3** | Reads through a root cell depend only on the pages below its mark — the `frame` law | `lookup_frame`, `toList_frame` |
+| **P4** | Search agrees with the contents: `lookup` returns what was inserted, insert and delete change the contents by exactly one binding, the scan comes out in key order | `lookup_correct`, `insert_correct`, `erase_correct` |
+
+Composed, they are **`insert_commit`** and **`erase_commit`**: one commit, and
+the new root cell reads back the map with the binding added or removed — every
+key, and the whole ordered scan — while *whatever the crash did*, the old root
+cell reads back the old map unchanged. Any image agreeing with the pre-commit
+one below the old mark, so arbitrary garbage in the whole range the commit was
+allocating; any subset of the commit's writes having landed, in any order. That
+second clause is the durability statement: until the root cell moves, the tree
+on disk is byte for byte the tree that was there before.
+
+The first three are statements about *where bytes go*, and a bug in them
+silently destroys committed data. P4 is a statement about *search*, and a bug in
+it is loud: the value you just wrote is not there. The split is not an accident
+of what was easy.
+
+P4 needed the ordering invariant written out as a mutual inductive over pages —
+a leaf denotes its strictly-increasing records; a branch denotes the
+concatenation of its children's, with separators carving up the key space and
+every child at the same depth. The invariant carries each subtree's key *range*,
+not just its contents, because a split promotes a key that lies in the child's
+range but between none of its records, and only the range says where that
+separator may go in the parent. Depth is explicit, which is what makes
+`lookupAux`'s fuel bound respectable: a tree of depth `d` is searched correctly
+by any fuel above `d`, and an insert deepens it by at most one.
+
+**Deliberately not proved.** The checksums are not part of the crash-safety
 argument — that argument rules out *reading* a torn page at all, by never
 overwriting what the live root reaches, and the checksum is defence in depth for
 the failures the model does not claim to cover (bit rot, misdirected writes, a
-device that ignores its own barriers). Nor is `Format.correct` — that the tree
-returns what you put in it — proved; it is a statement about search, not about
-durability, and it is tested.
+device that ignores its own barriers).
 
 **Limits, stated.** Values must fit in a page (no overflow chains); deletion does
 not rebalance; and pages left behind by a commit are not reclaimed, because a
@@ -582,8 +615,8 @@ rate is exactly the kind that survives a test suite and bites in production.
   discipline, the encoding and the bridge to the crash rule are all proved; the
   shims that move the bytes (`RaftKV.Runtime.Store`, `RaftKV.Runtime.PageFile`,
   `RaftKV.Posix`) are trusted, and listed as such below.
-- **The copy-on-write B-tree.** Its page layout, checksums, search and
-  copy-on-write updates are implemented and tested, not proved. See below.
+- **The B-tree's checksums.** The tree's four properties are proved; the CRC-32
+  page checks are tested only, deliberately — see below.
 
 ## The proved properties, also tested
 

@@ -5,8 +5,8 @@ import RaftKV.Storage.BTree
 
 Four properties, in the order they matter. The first three are about
 *durability* — they are what makes a crash survivable, and they are proved here
-in full. The fourth is about the data structure being any good, and is the
-subject of the second half of this file.
+in full. The fourth is about the data structure being any good, and is proved in
+`RaftKV/Storage/BTreeContents.lean`.
 
 **P1 — Allocation is monotone.** An update never lowers the high-water mark, and
 every page it writes lies in `[old mark, new mark)`. Nothing is written twice.
