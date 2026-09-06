@@ -20,7 +20,7 @@ variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 /-- No replica holds an entry from a term it has not reached. -/
 def LogTermsBounded (w : World σ κ) : Prop :=
   ∀ (i k : Nat) (e : Entry),
-    LogStore.get (w.nodes i).log k = some e → e.term ≤ (w.nodes i).currentTerm
+    LogStore.get (w.full i) k = some e → e.term ≤ (w.nodes i).currentTerm
 
 /-- No payload carries entries from beyond its own term. -/
 def MsgTermsBounded (w : World σ κ) : Prop :=
@@ -41,13 +41,14 @@ theorem tInv_init (members : List Nat) : TInv (σ := σ) (κ := κ) members (Wor
     rw [World.init] at h
     simp only [Protocol.initState] at h
     have hs := (LogStore.get_isSome_iff (LogStore.empty : σ) k).mp (by rw [h]; rfl)
-    simp only [LogStore.lastIndex_empty] at hs
+    simp only [LogStore.lastIndex_empty, LawfulLogStore.first_empty] at hs
     omega
   msgs := by intro src dst t l pi pt es lc n e h; simp [World.init] at h
 
 /-- **The term-bound invariants are preserved by every step.** -/
 theorem tInv_step {members : List Nat} {w w' : World σ κ}
-    (h : TInv members w) (hs : Step members w w') : TInv members w' := by
+    (hr : Reachable members w) (h : TInv members w) (hs : Step members w w') : TInv members w' := by
+  have hr' : Reachable members w' := Reachable.tail hr hs
   have key : ∀ (j : Nat) (ev : Event), w' = w.act j ev →
       (∀ src m', ev = Event.recv src m' → (src, j, m') ∈ w.sent) →
       TInv members w' := by
@@ -57,14 +58,15 @@ theorem tInv_step {members : List Nat} {w w' : World σ κ}
       intro i k e hget
       by_cases hij : i = j
       · subst hij
-        rw [act_nodes_self] at hget ⊢
+        rw [act_full_self] at hget
+        rw [act_nodes_self]
         have hmono := step_term_mono (w.nodes i) ev
-        rcases step_log (w.nodes i) ev with hl | ⟨rid, cmd, hev, hl⟩ |
-          ⟨src, term, l, pi, pt, es, lc, hev, hl, hpi, _, _, _⟩
+        rcases full_step (w.nodes i) (w.full i) ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
+          ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩
         · rw [hl] at hget
           exact Nat.le_trans (h.logs i k e hget) hmono
         · rw [hl, LogStore.get_append] at hget
-          by_cases hk : k = LogStore.lastIndex (w.nodes i).log + 1
+          by_cases hk : k = LogStore.lastIndex (w.full i) + 1
           · rw [if_pos hk] at hget
             have he : e = { term := (w.nodes i).currentTerm, cmd := cmd, reqId := rid } :=
               (Option.some.inj hget).symm
@@ -74,10 +76,13 @@ theorem tInv_step {members : List Nat} {w w' : World σ κ}
             exact Nat.le_trans (h.logs i k e hget) hmono
         · subst hev
           rw [hl] at hget
+          obtain ⟨hpi, _, hfw⟩ := aeAccepts_facts ha
+          have hlastb := full_lastIndex hr i
+          have hf1 : LogStore.firstIndex (w.full i) = 1 := full_firstIndex hr i
           refine appendFrom_mem
             (fun _ e' => e'.term ≤ (Protocol.step (w.nodes i)
               (Event.recv src (Msg.appendEntries term l pi pt es lc))).1.currentTerm)
-            es (w.nodes i).log (pi + 1) (by omega) (by omega) ?_ ?_ k e hget
+            es (w.full i) (pi + 1) (by omega) (by omega) ?_ ?_ k e hget
           · intro k' e' hk'
             exact Nat.le_trans (h.logs i k' e' hk') hmono
           · intro n e' hn
@@ -87,7 +92,8 @@ theorem tInv_step {members : List Nat} {w w' : World σ κ}
                 (Event.recv src (Msg.appendEntries term l pi pt es lc))).1.currentTerm := by
               rw [Protocol.step, handleAppendEntries_term_eq]; omega
             omega
-      · rw [act_nodes_ne _ _ _ hij] at hget ⊢
+      · rw [act_full_ne _ _ _ hij] at hget
+        rw [act_nodes_ne _ _ _ hij]
         exact h.logs i k e hget
     refine ⟨hlogs, ?_⟩
     intro src dst t l pi pt es lc n e hp hn
@@ -102,17 +108,20 @@ theorem tInv_step {members : List Nat} {w w' : World σ κ}
       obtain ⟨p0, hp0⟩ := step_appendEntries_payload hact
       simp only [appendEntriesTo] at hp0
       obtain ⟨htt, _, hpi, _, hes, _⟩ := Msg.appendEntries.inj hp0
-      have hni : max 1 (PeerMap.get (Protocol.step (w.nodes src) ev).1.nextIndex p0
+      have hni : max (LogStore.sendFloor (Protocol.step (w.nodes src) ev).1.log)
+          (PeerMap.get (Protocol.step (w.nodes src) ev).1.nextIndex p0
           (LogStore.lastIndex (Protocol.step (w.nodes src) ev).1.log + 1)) = pi + 1 := by
         rw [hpi]
-        have := Nat.le_max_left 1
+        have := Nat.le_max_left (LogStore.sendFloor (Protocol.step (w.nodes src) ev).1.log)
           (PeerMap.get (Protocol.step (w.nodes src) ev).1.nextIndex p0
             (LogStore.lastIndex (Protocol.step (w.nodes src) ev).1.log + 1))
+        have := LogStore.one_le_sendFloor (Protocol.step (w.nodes src) ev).1.log
         omega
       rw [hes] at hn
       have hget := appendEntriesTo_entries (s := (Protocol.step (w.nodes src) ev).1) (p := p0) hn
       rw [hni] at hget
-      have := hlogs src (pi + 1 + n) e (by rw [act_nodes_self]; exact hget)
+      have := hlogs src (pi + 1 + n) e
+        (full_get_of hr' (i := src) (by rw [act_nodes_self]; exact hget))
       rw [act_nodes_self] at this
       omega
   cases hs with
@@ -128,12 +137,12 @@ theorem tInv_step {members : List Nat} {w w' : World σ κ}
   | crash k hk =>
       refine ⟨?_, ?_⟩
       · intro i k' e hget
+        rw [crash_full] at hget
         by_cases hik : i = k
         · subst hik
-          rw [crash_nodes_self, restart_log] at hget
           rw [crash_nodes_self, restart_currentTerm]
           exact h.logs i k' e hget
-        · rw [crash_nodes_ne _ _ hik] at hget ⊢; exact h.logs i k' e hget
+        · rw [crash_nodes_ne _ _ hik]; exact h.logs i k' e hget
       · intro src dst t l pi pt es lc n e hp hn
         rw [crash_sent] at hp; exact h.msgs src dst t l pi pt es lc n e hp hn
 
@@ -142,7 +151,7 @@ theorem tInv_reachable {members : List Nat} {w : World σ κ} (h : Reachable mem
     TInv members w := by
   induction h with
   | init => exact tInv_init members
-  | tail _ hs ih => exact tInv_step ih hs
+  | tail hr hs ih => exact tInv_step hr ih hs
 
 /-! ## Terms are positive -/
 
@@ -258,7 +267,7 @@ theorem chainSorted_step {members : List Nat} {w w' : World σ κ}
     · exact h idx e p h'
     · obtain ⟨hlead, hidx, hterm, rid, cmd, hev⟩ := mem_chainOf h'
       -- the recorded predecessor is an entry of the same leader, whose terms are bounded
-      cases hq : LogStore.get (Protocol.step (w.nodes j) ev).1.log (idx - 1) with
+      cases hq : LogStore.get (fullStep (w.nodes j) (w.full j) ev) (idx - 1) with
       | none =>
           have : p = 0 := by
             unfold chainOf at h'
@@ -276,7 +285,7 @@ theorem chainSorted_step {members : List Nat} {w w' : World σ κ}
             rw [if_pos hlead] at h'
             simp only [List.mem_singleton, Prod.mk.injEq] at h'
             rw [h'.2.2, ← h'.1, LogStore.termAt, hq]; rfl
-          have hvb := ht' j (idx - 1) v (by rw [act_nodes_self]; exact hq)
+          have hvb := ht' j (idx - 1) v (by rw [act_full_self]; exact hq)
           rw [act_nodes_self] at hvb
           omega
   cases hs with
@@ -324,7 +333,9 @@ theorem wf_terms_sorted {members : List Nat} {w : World σ κ}
         have hee : e₁ = e₂ := Option.some.inj g₂
         subst hee
         exact Nat.le_refl _
-      · have hk1 : 1 ≤ k₁ := ((LogStore.get_isSome_iff lg k₁).mp (by rw [g₁]; rfl)).1
+      · have hk1 : LogStore.firstIndex lg ≤ k₁ :=
+          ((LogStore.get_isSome_iff lg k₁).mp (by rw [g₁]; rfl)).1
+        have hnc := hwf.nocompact
         have hk2 : 2 ≤ k₂ := by omega
         obtain ⟨p, hp1, hp2⟩ := hwf.chained k₂ e₂ g₂ hk2
         have hple : p ≤ e₂.term := chainSorted_reachable hrch k₂ e₂ p hp1

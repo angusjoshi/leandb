@@ -29,9 +29,17 @@ def PrefixOf (lg₁ lg₂ : σ) : Prop :=
 
 theorem PrefixOf.refl (lg : σ) : PrefixOf lg lg := fun _ _ => rfl
 
-/-- A prefix is no longer than what it is a prefix of. -/
-theorem PrefixOf.len {a b : σ} [LawfulLogStore σ] (h : PrefixOf a b) :
-    LogStore.lastIndex a ≤ LogStore.lastIndex b := by
+/--
+A prefix is no longer than what it is a prefix of.
+
+The hypothesis that `a` has discarded nothing is what compaction costs here: the
+argument reads `a` at its own last index, and a log that has thrown a prefix away
+would still answer there, but a log that had thrown *everything* away would not.
+Every log this is applied to is a logical one, so it holds by
+`RaftKV.Proof.full_firstIndex`.
+-/
+theorem PrefixOf.len {a b : σ} [LawfulLogStore σ] (ha : LogStore.firstIndex a = 1)
+    (h : PrefixOf a b) : LogStore.lastIndex a ≤ LogStore.lastIndex b := by
   rcases Nat.eq_zero_or_pos (LogStore.lastIndex a) with h0 | h0
   · omega
   · have hs : (LogStore.get a (LogStore.lastIndex a)).isSome :=
@@ -46,7 +54,7 @@ theorem PrefixOf.trans {a b c : σ} (h₁ : PrefixOf a b) (h₂ : PrefixOf b c)
   rw [h₂ k (by omega), h₁ k hk]
 
 /-- Appending extends a prefix. -/
-theorem PrefixOf.append {a b : σ} (h : PrefixOf a b) (e : Entry) :
+theorem PrefixOf.append {a b : σ} (ha : LogStore.firstIndex a = 1) (h : PrefixOf a b) (e : Entry) :
     PrefixOf a (LogStore.append b e) := by
   intro k hk
   rw [LogStore.get_append, if_neg, h k hk]
@@ -55,18 +63,18 @@ theorem PrefixOf.append {a b : σ} (h : PrefixOf a b) (e : Entry) :
   have hs : (LogStore.get a k).isSome := by
     rcases Nat.eq_zero_or_pos k with h0 | h0
     · exfalso; omega
-    · exact (LogStore.get_isSome_iff a k).mpr ⟨h0, hk⟩
+    · exact (LogStore.get_isSome_iff a k).mpr ⟨by omega, hk⟩
   have : (LogStore.get b k).isSome := by rw [h k hk]; exact hs
   have := ((LogStore.get_isSome_iff b k).mp this).2
   omega
 
 theorem act_leaderLogs (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).leaderLogs
-      = w.leaderLogs ++ leaderLogOf j (Protocol.step (w.nodes j) ev).1 := rfl
+      = w.leaderLogs ++ leaderLogOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) := rfl
 
-theorem mem_leaderLogOf {i j t : Nat} {lg : σ} {s : NodeState σ κ}
-    (h : (i, t, lg) ∈ leaderLogOf j s) :
-    i = j ∧ t = s.currentTerm ∧ lg = s.log ∧ s.role = Role.leader := by
+theorem mem_leaderLogOf {i j t : Nat} {lg fl : σ} {s : NodeState σ κ}
+    (h : (i, t, lg) ∈ leaderLogOf j s fl) :
+    i = j ∧ t = s.currentTerm ∧ lg = fl ∧ s.role = Role.leader := by
   unfold leaderLogOf at h
   split at h
   · rename_i hr
@@ -78,8 +86,8 @@ theorem leaderLog_mono {w : World σ κ} {j : Nat} {ev : Event} {i t : Nat} {lg 
     (h : (i, t, lg) ∈ w.leaderLogs) : (i, t, lg) ∈ (w.act j ev).leaderLogs := by
   rw [act_leaderLogs]; exact List.mem_append_left _ h
 
-theorem leaderLogOf_self {j : Nat} {s : NodeState σ κ} (h : s.role = Role.leader) :
-    (j, s.currentTerm, s.log) ∈ leaderLogOf j s := by
+theorem leaderLogOf_self {j : Nat} {s : NodeState σ κ} {fl : σ} (h : s.role = Role.leader) :
+    (j, s.currentTerm, fl) ∈ leaderLogOf j s fl := by
   unfold leaderLogOf; rw [if_pos h]; simp
 
 /-- A snapshot's owner is on record as leading that term. -/
@@ -89,7 +97,7 @@ def LeaderLogLed (w : World σ κ) : Prop :=
 /-- Snapshots are prefixes of the current log while the term stands. -/
 def LeaderLogPrefix (w : World σ κ) : Prop :=
   ∀ i t (lg : σ), (i, t, lg) ∈ w.leaderLogs → (w.nodes i).currentTerm = t →
-    PrefixOf lg (w.nodes i).log
+    PrefixOf lg (w.full i)
 
 /-- Snapshots for one `(node, term)` are totally ordered by prefix. -/
 def LeaderLogsChain (w : World σ κ) : Prop :=
@@ -101,10 +109,16 @@ def CreatedInLeaderLog (w : World σ κ) : Prop :=
   ∀ c k (e : Entry), (c, k, e) ∈ w.created →
     ∃ lg : σ, (c, e.term, lg) ∈ w.leaderLogs ∧ LogStore.get lg k = some e
 
+/-- Every snapshot is a logical log, so it has discarded nothing. -/
+def LeaderLogNoCompact (w : World σ κ) : Prop :=
+  ∀ i t (lg : σ), (i, t, lg) ∈ w.leaderLogs → LogStore.firstIndex lg = 1
+
 /-- The leader-log invariants. -/
 structure LLInv (members : List Nat) (w : World σ κ) : Prop where
   /-- Snapshot owners are on record. -/
   led : LeaderLogLed w
+  /-- Snapshots have discarded nothing. -/
+  nc : LeaderLogNoCompact w
   /-- Snapshots are prefixes of the current log. -/
   pre : LeaderLogPrefix w
   /-- Snapshots for a term form a chain. -/
@@ -115,6 +129,7 @@ structure LLInv (members : List Nat) (w : World σ κ) : Prop where
 theorem llInv_init (members : List Nat) :
     LLInv (σ := σ) (κ := κ) members (World.init members) where
   led := by intro i t lg h; simp [World.init] at h
+  nc := by intro i t lg h; simp [World.init] at h
   pre := by intro i t lg h; simp [World.init] at h
   chain := by intro i t lg₁ lg₂ h; simp [World.init] at h
   created := by intro c k e h; simp [World.init] at h
@@ -123,6 +138,7 @@ theorem llInv_init (members : List Nat) :
 theorem llInv_step {members : List Nat} {w w' : World σ κ}
     (hnd : members.Nodup) (hr : Reachable members w)
     (h : LLInv members w) (hs : Step members w w') : LLInv members w' := by
+  have hr' : Reachable members w' := Reachable.tail hr hs
   have hl := ledInv_reachable hnd hr
   have key : ∀ (j : Nat) (ev : Event), w' = w.act j ev → LLInv members w' := by
     intro j ev hw
@@ -144,7 +160,7 @@ theorem llInv_step {members : List Nat} {w w' : World σ κ}
       rcases List.mem_append.mp hmem with h' | h'
       · by_cases hij : i = j
         · subst hij
-          rw [act_nodes_self] at hterm ⊢
+          rw [act_nodes_self] at hterm
           -- the term did not move, so the node is still leading and only appended
           have hledr : (i, t) ∈ w.led := h.led i t lg h'
           have hb := hl.bound i t hledr
@@ -152,28 +168,40 @@ theorem llInv_step {members : List Nat} {w w' : World σ κ}
           rw [act_nodes_self] at hmono
           have hold : (w.nodes i).currentTerm = t := by omega
           have hpo := h.pre i t lg h' hold
-          rcases led_log_stable hnd hr hs hledr hold (by rw [act_nodes_self]; exact hterm)
+          rcases led_full_stable hnd hr hs hledr hold (by rw [act_nodes_self]; exact hterm)
             with hlog | ⟨e', hlog⟩
-          · rw [act_nodes_self] at hlog; rw [hlog]; exact hpo
-          · rw [act_nodes_self] at hlog; rw [hlog]; exact hpo.append e'
-        · rw [act_nodes_ne _ _ _ hij] at hterm ⊢
+          · rw [act_full_self] at hlog; rw [act_full_self, hlog]; exact hpo
+          · rw [act_full_self] at hlog
+            rw [act_full_self, hlog]
+            exact hpo.append (h.nc i t lg h') e'
+        · rw [act_nodes_ne _ _ _ hij] at hterm
+          rw [act_full_ne _ _ _ hij]
           exact h.pre i t lg h' hterm
       · obtain ⟨h1, _, h3, _⟩ := mem_leaderLogOf h'
         subst h1; subst h3
-        rw [act_nodes_self]
+        rw [act_full_self]
         exact PrefixOf.refl _
-    refine ⟨hled, hpre, ?_, ?_⟩
+    have hnc : LeaderLogNoCompact (w.act j ev) := by
+      intro i t lg hmem
+      rw [act_leaderLogs] at hmem
+      rcases List.mem_append.mp hmem with h' | h'
+      · exact h.nc i t lg h'
+      · obtain ⟨_, _, h3, _⟩ := mem_leaderLogOf h'
+        subst h3
+        have := full_firstIndex hr' (i := j)
+        rwa [act_full_self] at this
+    refine ⟨hled, hnc, hpre, ?_, ?_⟩
     · -- chain: a fresh snapshot extends every old one for the same node and term
       intro i t lg₁ lg₂ hm₁ hm₂
       rw [act_leaderLogs] at hm₁ hm₂
       have fresh : ∀ (lgo lgn : σ), (i, t, lgo) ∈ w.leaderLogs →
-          (i, t, lgn) ∈ leaderLogOf j (Protocol.step (w.nodes j) ev).1 → PrefixOf lgo lgn := by
+          (i, t, lgn) ∈ leaderLogOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) → PrefixOf lgo lgn := by
         intro lgo lgn ho hn
         obtain ⟨h1, h2, h3, _⟩ := mem_leaderLogOf hn
         subst h1; subst h3
         have := hpre i t lgo (by rw [act_leaderLogs]; exact List.mem_append_left _ ho)
           (by rw [act_nodes_self]; exact h2.symm)
-        rwa [act_nodes_self] at this
+        rwa [act_full_self] at this
       rcases List.mem_append.mp hm₁ with h₁ | h₁ <;>
         rcases List.mem_append.mp hm₂ with h₂ | h₂
       · exact h.chain i t lg₁ lg₂ h₁ h₂
@@ -191,7 +219,7 @@ theorem llInv_step {members : List Nat} {w w' : World σ κ}
         exact ⟨lg, leaderLog_mono hlg1, hlg2⟩
       · obtain ⟨h1, hlead, hterm, _, hget⟩ := createdOf_get h'
         subst h1
-        refine ⟨(Protocol.step (w.nodes c) ev).1.log, ?_, hget⟩
+        refine ⟨fullStep (w.nodes c) (w.full c) ev, ?_, hget⟩
         rw [act_leaderLogs]
         refine List.mem_append_right _ ?_
         rw [hterm]
@@ -203,16 +231,17 @@ theorem llInv_step {members : List Nat} {w w' : World σ κ}
   | client k rid cmd hk => exact key k _ rfl
   | crash k hk =>
       -- snapshots and the ledger are ghosts; the log a snapshot prefixes is durable
-      refine ⟨?_, ?_, ?_, ?_⟩
+      refine ⟨?_, ?_, ?_, ?_, ?_⟩
       · intro i t lg hm; rw [crash_leaderLogs] at hm; rw [crash_led]; exact h.led i t lg hm
+      · intro i t lg hm; rw [crash_leaderLogs] at hm; exact h.nc i t lg hm
       · intro i t lg hm hterm
         rw [crash_leaderLogs] at hm
+        rw [crash_full]
         by_cases hik : i = k
         · subst hik
-          rw [crash_nodes_self, restart_log]
           rw [crash_nodes_self, restart_currentTerm] at hterm
           exact h.pre i t lg hm hterm
-        · rw [crash_nodes_ne _ _ hik] at hterm ⊢; exact h.pre i t lg hm hterm
+        · rw [crash_nodes_ne _ _ hik] at hterm; exact h.pre i t lg hm hterm
       · intro i t lg₁ lg₂ h₁ h₂
         rw [crash_leaderLogs] at h₁ h₂; exact h.chain i t lg₁ lg₂ h₁ h₂
       · intro c k' e hm
@@ -223,7 +252,7 @@ theorem llInv_step {members : List Nat} {w w' : World σ κ}
 /-- A node that currently leads has its current log on record. -/
 def LeaderNowRecorded (w : World σ κ) : Prop :=
   ∀ i, (w.nodes i).role = Role.leader →
-    (i, (w.nodes i).currentTerm, (w.nodes i).log) ∈ w.leaderLogs
+    (i, (w.nodes i).currentTerm, w.full i) ∈ w.leaderLogs
 
 theorem leaderNowRecorded_init (members : List Nat) :
     LeaderNowRecorded (σ := σ) (κ := κ) (World.init members) := by
@@ -239,8 +268,10 @@ theorem leaderNowRecorded_step {members : List Nat} {w w' : World σ κ}
     by_cases hij : i = j
     · subst hij
       rw [act_nodes_self] at hlead ⊢
+      rw [act_full_self]
       exact List.mem_append_right _ (leaderLogOf_self hlead)
     · rw [act_nodes_ne _ _ _ hij] at hlead ⊢
+      rw [act_full_ne _ _ _ hij]
       exact List.mem_append_left _ (h i hlead)
   cases hs with
   | deliver s d m hd hm => exact key d _ rfl
@@ -280,7 +311,7 @@ theorem leaderLogWF_step {members : List Nat} {w w' : World σ κ}
     rcases List.mem_append.mp hmem with h' | h'
     · exact (h i t lg h').mono
     · obtain ⟨_, _, h3, _⟩ := mem_leaderLogOf h'
-      have hq : ((w.act j ev).nodes j).log = lg := by rw [act_nodes_self]; exact h3.symm
+      have hq : ((w.act j ev).full j) = lg := by rw [act_full_self]; exact h3.symm
       rw [← hq]; exact wf_node hnd hr' j
   cases hs with
   | deliver s d m hd hm => exact key d _ rfl
@@ -328,15 +359,19 @@ theorem leaderLogHasElected_step {members : List Nat} {w w' : World σ κ}
           · subst hev
             rw [Protocol.step, if_pos (by rw [hpl]; simp)]
           · exact ht.symm
-        obtain ⟨lgel, he1, he2⟩ := h X U (w.nodes X).log (hterm ▸ hnow X hpl)
+        obtain ⟨lgel, he1, he2⟩ := h X U (w.full X) (hterm ▸ hnow X hpl)
+        have hnc : LogStore.firstIndex lgel = 1 :=
+          ((snapWF_reachable hnd hr).2.2 X U lgel he1).nocompact
         refine ⟨lgel, elected_mono he1, ?_⟩
-        refine PrefixOf.trans he2 ?_ he2.len
+        refine PrefixOf.trans he2 ?_ (PrefixOf.len hnc he2)
         -- the leader only ever appended
-        rcases leader_log_monotone hs hpl (by rw [act_nodes_self]; exact h4) with hl | ⟨e, hl⟩
-        · rw [act_nodes_self] at hl; rw [hl]; exact PrefixOf.refl _
-        · rw [act_nodes_self] at hl; rw [hl]; exact (PrefixOf.refl _).append e
+        rcases leader_full_monotone hs hpl (by rw [act_nodes_self]; exact h4) with hl | ⟨e, hl⟩
+        · rw [act_full_self] at hl; rw [hl]; exact PrefixOf.refl _
+        · rw [act_full_self] at hl
+          rw [hl]
+          exact (PrefixOf.refl _).append (full_firstIndex hr X) e
       · -- just elected: the election record is this very snapshot
-        refine ⟨(Protocol.step (w.nodes X) ev).1.log, ?_, PrefixOf.refl _⟩
+        refine ⟨fullStep (w.nodes X) (w.full X) ev, ?_, PrefixOf.refl _⟩
         rw [act_elected, h2]
         refine List.mem_append_right _ ?_
         unfold electedOf

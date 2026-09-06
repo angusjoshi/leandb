@@ -75,7 +75,7 @@ theorem ack_term_le {members : List Nat} {w : World σ κ}
 
 /-- A freshly recorded acknowledgement carries the node's post-state term. -/
 theorem fresh_ack_term {w : World σ κ} {v T m : Nat} {lgp : σ} {ev : Event}
-    (h : (v, T, m, lgp) ∈ ackOf v (Protocol.step (w.nodes v) ev).1
+    (h : (v, T, m, lgp) ∈ ackOf v (Protocol.step (w.nodes v) ev).1 (fullStep (w.nodes v) (w.full v) ev)
             (Protocol.step (w.nodes v) ev).2) :
     ((w.act v ev).nodes v).currentTerm = T := by
   rw [act_nodes_self]
@@ -89,7 +89,7 @@ theorem fresh_ack_term {w : World σ κ} {v T m : Nat} {lgp : σ} {ev : Event}
 /-- A node that records an acknowledgement has spent its vote for that term. -/
 theorem fresh_ack_voted {members : List Nat} {w : World σ κ}
     {v T m : Nat} {lgp : σ} {ev : Event} (hr' : Reachable members (w.act v ev))
-    (h : (v, T, m, lgp) ∈ ackOf v (Protocol.step (w.nodes v) ev).1
+    (h : (v, T, m, lgp) ∈ ackOf v (Protocol.step (w.nodes v) ev).1 (fullStep (w.nodes v) (w.full v) ev)
             (Protocol.step (w.nodes v) ev).2) :
     ((w.act v ev).nodes v).votedFor ≠ none := by
   rcases mem_ackOf_cases h with ⟨to0, hact, _, _⟩ | ⟨hlead, _, _, _, _⟩

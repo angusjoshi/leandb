@@ -26,7 +26,7 @@ variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 
 @[simp] theorem act_commits (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).commits
-      = w.commits ++ commitOf j (w.nodes j) (Protocol.step (w.nodes j) ev).1 := rfl
+      = w.commits ++ commitOf j (w.nodes j) (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) := rfl
 
 @[simp] theorem act_created' (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).created

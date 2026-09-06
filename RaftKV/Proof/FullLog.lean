@@ -130,6 +130,20 @@ theorem appendFrom_bridge :
           · rfl
           · exact hag k hk
 
+/-- A leader's logical log only ever grows, exactly as its real one does. -/
+theorem step_full_of_leader (s : NodeState σ κ) (fl : σ) (ev : Event)
+    (hlold : s.role = Role.leader) (hl : (Protocol.step s ev).1.role = Role.leader) :
+    fullStep s fl ev = fl ∨ ∃ e, fullStep s fl ev = LogStore.append fl e := by
+  rcases full_step s fl ev with h | ⟨rid, cmd, _, _, h⟩ | ⟨src, term, l, pi, pt, es, lc, hev, ha, h⟩
+  · exact Or.inl h
+  · exact Or.inr ⟨_, h⟩
+  · exfalso
+    subst hev
+    have hct := aeAccepts_term ha
+    rw [Protocol.step, handleAppendEntries, if_neg (by omega)] at hl
+    dsimp only at hl
+    split at hl <;> simp at hl
+
 /-! ## The bridge invariant -/
 
 /-- The logical log never discards, reaches exactly as far, and agrees in the window. -/
@@ -347,6 +361,28 @@ theorem full_lastTerm {members : List Nat} {w : World σ κ} (h : Reachable memb
 theorem full_lastIndex {members : List Nat} {w : World σ κ} (h : Reachable members w) (i : Nat) :
     LogStore.lastIndex (w.full i) = LogStore.lastIndex (w.nodes i).log :=
   (fullBridge_reachable h).last i
+
+/-- A leader's logical log only grows across a step, mirroring `leader_log_monotone`. -/
+theorem leader_full_monotone {members : List Nat} {w w' : World σ κ}
+    (hs : Step members w w') {i : Nat}
+    (hl : (w.nodes i).role = Role.leader) (hl' : (w'.nodes i).role = Role.leader) :
+    w'.full i = w.full i ∨ ∃ e, w'.full i = LogStore.append (w.full i) e := by
+  have key : ∀ (j : Nat) (ev : Event), w' = w.act j ev →
+      w'.full i = w.full i ∨ ∃ e, w'.full i = LogStore.append (w.full i) e := by
+    intro j ev hw
+    subst hw
+    by_cases hij : i = j
+    · subst hij
+      rw [act_nodes_self] at hl'
+      rw [act_full_self]
+      exact step_full_of_leader _ _ _ hl hl'
+    · rw [act_full_ne _ _ _ hij]; exact Or.inl rfl
+  cases hs with
+  | deliver s d m hd hmem => exact key d _ rfl
+  | electionTimeout k _ => exact key k _ rfl
+  | heartbeat k _ => exact key k _ rfl
+  | client k rid cmd _ => exact key k _ rfl
+  | crash k _ => exact Or.inl rfl
 
 /-- The logical log has no holes: an entry at `idx` implies entries at every index below. -/
 theorem full_isSome_below {members : List Nat} {w : World σ κ} (h : Reachable members w)

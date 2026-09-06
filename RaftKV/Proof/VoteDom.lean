@@ -25,7 +25,7 @@ variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 
 theorem act_voteLogs (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).voteLogs
-      = w.voteLogs ++ voteLogOf j (Protocol.step (w.nodes j) ev).1
+      = w.voteLogs ++ voteLogOf j (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev)
           (Protocol.step (w.nodes j) ev).2 := rfl
 
 theorem voteLog_mono {w : World σ κ} {j : Nat} {ev : Event} {v U : Nat} {lg : σ}
@@ -49,7 +49,8 @@ theorem voteDom_init (members : List Nat) :
 
 /-- **`VoteDom` is preserved by every step.** -/
 theorem voteDom_step {members : List Nat} {w w' : World σ κ}
-    (hb : Inv members w) (h : VoteDom w) (hs : Step members w w') : VoteDom w' := by
+    (hr : Reachable members w) (hb : Inv members w) (h : VoteDom w) (hs : Step members w w') :
+    VoteDom w' := by
   have key : ∀ (j : Nat) (ev : Event), w' = w.act j ev →
       (∀ src m', ev = Event.recv src m' → (src, j, m') ∈ w.sent) →
       VoteDom w' := by
@@ -103,10 +104,27 @@ theorem voteDom_step {members : List Nat} {w w' : World σ κ}
                     rw [upToDate] at h4
                     simp only [Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq,
                       beq_iff_eq] at h4
+                    have hfl : fullStep (w.nodes j) (w.full j)
+                        (Event.recv src (Msg.requestVote term candId li lt)) = w.full j := rfl
+                    have hli : LogStore.lastIndex (w.full j)
+                        = LogStore.lastIndex (w.nodes j).log := full_lastIndex hr j
+                    have hlt : LogStore.lastTerm (w.full j)
+                        = LogStore.lastTerm (w.nodes j).log := full_lastTerm hr j
+                    have hhr : (handleRequestVote (w.nodes j) src term candId li lt).1.log
+                        = (w.nodes j).log := by
+                      have hm : (maybeStepDown (w.nodes j) term none).1.log = (w.nodes j).log := by
+                        rw [maybeStepDown]; split <;> rfl
+                      rw [handleRequestVote]
+                      split
+                      · rfl
+                      · dsimp only
+                        split
+                        · exact hm
+                        · exact hm
                     rcases h4 with hgt | ⟨heq1, hge⟩
-                    · exact Or.inl (by simpa [Protocol.step] using hgt)
-                    · exact Or.inr ⟨by simpa [Protocol.step] using heq1,
-                                     by simpa [Protocol.step] using hge⟩
+                    · exact Or.inl (by rw [hfl, hlt, ← hhr]; exact hgt)
+                    · exact Or.inr ⟨by rw [hfl, hlt, ← hhr]; exact heq1,
+                                     by rw [hfl, hli, ← hhr]; exact hge⟩
   cases hs with
   | deliver s d m hd hmem =>
       refine key d _ rfl ?_
@@ -127,7 +145,7 @@ theorem voteDom_reachable {members : List Nat} {w : World σ κ} (h : Reachable 
     VoteDom w := by
   induction h with
   | init => exact voteDom_init members
-  | tail hr hs ih => exact voteDom_step (inv_reachable hr) ih hs
+  | tail hr hs ih => exact voteDom_step hr (inv_reachable hr) ih hs
 
 /--
 **A vote means the elected leader's log dominates the voter's.**
