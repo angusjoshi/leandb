@@ -303,3 +303,129 @@ theorem erase_crash_safe {t t' : Tree} {f : Pages} {k : Nat}
   exact ⟨fun k' => lookup_frame hagree, toList_frame hagree⟩
 
 end RaftKV.BTree
+
+namespace RaftKV.BTree
+
+/-!
+## How an allocator grows during one update
+
+`Alloc.Grows` says where a whole commit's pages live. Proving the *contents* of
+the new tree needs the finer statement: each step only appends, and only at or
+above the mark it started from. That is what lets a subtree written early in the
+descent keep its meaning as the descent continues past it.
+-/
+
+/-- `a'` is `a` plus writes at or above `a`'s mark. -/
+structure Alloc.Extends (a a' : Alloc) : Prop where
+  /-- The mark did not go down. -/
+  le : a.next ≤ a'.next
+  /-- The new writes are appended, and all at or above the old mark. -/
+  ext : ∃ e, a'.writes = a.writes ++ e ∧ ∀ w ∈ e, a.next ≤ w.1
+
+theorem Alloc.extends_refl (a : Alloc) : Alloc.Extends a a :=
+  ⟨Nat.le_refl _, [], by simp, by simp⟩
+
+theorem Alloc.extends_trans {a b c : Alloc}
+    (h1 : Alloc.Extends a b) (h2 : Alloc.Extends b c) : Alloc.Extends a c := by
+  obtain ⟨e1, he1, hb1⟩ := h1.ext
+  obtain ⟨e2, he2, hb2⟩ := h2.ext
+  refine ⟨Nat.le_trans h1.le h2.le, e1 ++ e2, by rw [he2, he1, List.append_assoc], ?_⟩
+  intro w hw
+  rcases List.mem_append.mp hw with h | h
+  · exact hb1 w h
+  · exact Nat.le_trans h1.le (hb2 w h)
+
+theorem Alloc.extends_push {a : Alloc} {n : Node} : Alloc.Extends a (a.push n).2 :=
+  ⟨Nat.le_succ _, [(a.next, n)], rfl, by intro w hw; simp at hw; subst hw; exact Nat.le_refl _⟩
+
+theorem emit_extends {a a' : Alloc} {n : Node} {r : Ins}
+    {sp : Unit → Option (Node × Nat × Node)}
+    (h : emit a n sp = some (r, a')) : Alloc.Extends a a' := by
+  unfold emit at h
+  split at h
+  · injection h with h; injection h with _ h; subst h
+    exact Alloc.extends_push
+  · split at h
+    · exact absurd h (by simp)
+    · split at h
+      · injection h with h; injection h with _ h; subst h
+        exact Alloc.extends_trans Alloc.extends_push Alloc.extends_push
+      · exact absurd h (by simp)
+
+theorem insertAux_extends {t : Tree} {pages : Pages} {k : Nat} {v : ByteArray} :
+    ∀ (fuel p : Nat) {a a' : Alloc} {r : Ins},
+    insertAux t pages k v fuel p a = some (r, a') → Alloc.Extends a a'
+  | 0, _, _, _, _, h => by exact absurd h (by simp [insertAux])
+  | fuel + 1, p, a, a', r, h => by
+      rw [insertAux] at h
+      split at h
+      · exact absurd h (by simp)
+      · exact emit_extends h
+      · dsimp only at h
+        split at h
+        · exact absurd h (by simp)
+        · rename_i c _
+          split at h
+          · exact absurd h (by simp)
+          · rename_i a2 hrec
+            exact Alloc.extends_trans (insertAux_extends fuel c hrec) (emit_extends h)
+          · rename_i a2 hrec
+            exact Alloc.extends_trans (insertAux_extends fuel c hrec) (emit_extends h)
+
+theorem eraseAux_extends {t : Tree} {pages : Pages} {k : Nat} :
+    ∀ (fuel p : Nat) {a a' : Alloc} {q : Nat},
+    eraseAux t pages k fuel p a = some (q, a') → Alloc.Extends a a'
+  | 0, _, _, _, _, h => by exact absurd h (by simp [eraseAux])
+  | fuel + 1, p, a, a', q, h => by
+      rw [eraseAux] at h
+      split at h
+      · exact absurd h (by simp)
+      · injection h with h; injection h with _ h; subst h
+        exact Alloc.extends_push
+      · dsimp only at h
+        split at h
+        · exact absurd h (by simp)
+        · rename_i c _
+          split at h
+          · exact absurd h (by simp)
+          · rename_i a2 hrec
+            injection h with h; injection h with _ h; subst h
+            exact Alloc.extends_trans (eraseAux_extends fuel c hrec) Alloc.extends_push
+
+/-! ### Patching, step by step -/
+
+theorem patch_append (f : Pages) (ws e : List (Nat × Node)) :
+    patch f (ws ++ e) = patch (patch f ws) e := List.foldl_append ..
+
+/-- The image after `a'` agrees with the image after `a` on everything below `a`'s mark. -/
+theorem patch_extends {f : Pages} {a a' : Alloc} (h : Alloc.Extends a a') :
+    ∀ q, q < a.next → patch f a'.writes q = patch f a.writes q := by
+  obtain ⟨e, he, hb⟩ := h.ext
+  intro q hq
+  rw [he, patch_append, patch_below e hb q hq]
+
+/-- Writing a page leaves every other page alone. -/
+theorem patch_push_ne (f : Pages) (a : Alloc) (n : Node) {q : Nat} (hq : q ≠ a.next) :
+    patch f (a.push n).2.writes q = patch f a.writes q := by
+  show patch f (a.writes ++ [(a.next, n)]) q = _
+  rw [patch_append]
+  show (if q = a.next then some n else _) = _
+  rw [if_neg hq]
+
+/-- A page just written reads back as what was written. -/
+theorem patch_push (f : Pages) (a : Alloc) (n : Node) :
+    patch f (a.push n).2.writes a.next = some n := by
+  show patch f (a.writes ++ [(a.next, n)]) a.next = some n
+  rw [patch_append]
+  show (if a.next = a.next then some n else _) = some n
+  rw [if_pos rfl]
+
+/-- Of two pages written in succession, the first still reads back. -/
+theorem patch_push_two (f : Pages) (a : Alloc) (n1 n2 : Node) :
+    patch f (((a.push n1).2).push n2).2.writes a.next = some n1 := by
+  rw [patch_push_ne f (a.push n1).2 n2 (by
+    show a.next ≠ a.next + 1
+    omega)]
+  exact patch_push f a n1
+
+end RaftKV.BTree
