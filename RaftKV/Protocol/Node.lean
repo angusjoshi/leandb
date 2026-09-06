@@ -42,6 +42,23 @@ def initState (cfg : Config) : NodeState σ κ where
   pending := []
   leaderHint := none
 
+/--
+**Restart after a crash.** Volatile state is lost; durable state survives.
+
+Raft's durable trio is `currentTerm`, `votedFor` and the log. Everything else —
+role, commit and applied indices, the state machine, peer progress and pending
+client requests — is rebuilt from scratch: the state machine by replaying the
+log, which is why losing it costs nothing.
+
+Coming back as a *follower* is what makes a restart cheap to reason about: it
+discards any candidacy or leadership in flight, and the only route back to
+candidacy (`startElection`) strictly advances the term, so a node can never
+campaign twice in one term.
+-/
+def restart (s : NodeState σ κ) : NodeState σ κ :=
+  { (initState s.cfg : NodeState σ κ) with
+      currentTerm := s.currentTerm, votedFor := s.votedFor, log := s.log }
+
 /-! ## Helpers -/
 
 /--

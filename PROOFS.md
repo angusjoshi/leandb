@@ -374,6 +374,69 @@ places none either — which is exactly why request ids exist and why a client
 must retry with the same id. `FreshIds` is the client's half of the contract:
 one id per operation.
 
+## Crashes — tested, not yet proved
+
+The proved theorems cover a model with **no crash rule**: `Step` has four
+constructors (`deliver`, `electionTimeout`, `heartbeat`, `client`), all of which
+go through `World.act`, and nothing ever resets a node. So the model does not
+merely omit crashes — it *implicitly assumes all state is durable*, which is why
+the missing `fsync` does not show up as a failed proof.
+
+`Protocol.restart` states the intended crash semantics as a pure function:
+Raft's durable trio (`currentTerm`, `votedFor`, the log) survives; role, commit
+and applied indices, the state machine, peer progress and pending requests are
+rebuilt. Coming back as a *follower* is what makes it cheap to reason about — it
+discards any candidacy in flight, and the only route back to candidacy
+(`startElection`) strictly advances the term, so a node can never campaign twice
+in one term.
+
+Before re-doing the proofs under a crash rule, the design was measured. The
+simulator gained crash events, and the checks were re-phrased over **histories**
+— every entry ever applied, every vote ever granted, every reply ever sent —
+because a restart zeroes `lastApplied` and a final-state check simply stops
+seeing anything that happened before a crash. That re-phrasing was not
+cosmetic: against a system with no persistence at all, the three final-state
+checks (`electionSafe`, `entriesAgree`, `prefixesAgree`) report **zero**
+failures in 500 schedules, because a node that forgot its log cannot disagree
+with anyone.
+
+**Result — the design holds.** Zero failures across 710 schedules with crashes
+(300 × 400 steps on 3 nodes, 200 × 800 on 5, 60 × 1200, 150 × 600), on durable
+State Machine Safety, vote uniqueness, and linearizability's reply clause. The
+sweep is not vacuous under crashes: 63/100 runs still end with an elected
+leader, with 1754 entries applied and 395 replies sent across a 100-seed sample.
+
+**Which durability obligations are load-bearing** (failures out of 300
+schedules, 3 nodes):
+
+| restart keeps | applied-history | vote-uniqueness | replies-vs-spec |
+|---|---|---|---|
+| **all three (the design)** | **0** | **0** | **0** |
+| forgets `votedFor` | 0 | 2 | 0 |
+| forgets `currentTerm` | 0 | 50 | 0 |
+| forgets the log | 100 | 0 | 45 |
+| forgets everything (today's server) | 84 | 48 | 32 |
+
+All three fields are load-bearing, and they fail in different ways. Forgetting
+`currentTerm` breaks *voting* even though `votedFor` survived: a node back at
+term 0 treats almost any incoming request as newer, steps down, and `stepDown`
+clears the vote. Forgetting `votedFor` alone fails on only 2 schedules in 300 —
+a useful reminder that testing does not substitute for the proof, since a 0.7%
+failure rate is exactly the kind that survives a test suite and bites in
+production.
+
+**The shim must persist before it sends.** The model makes a step's state update
+and its sends atomic; reality does not. Note the asymmetry: crashing and losing
+in-flight messages is already covered, because the network model lets any packet
+never be delivered. The dangerous direction is state loss with the send
+surviving, and no amount of network nondeterminism models it. Simulating a shim
+that lets messages escape before the durable write lands produces 9
+vote-uniqueness failures in 300 schedules on three nodes and 66 in 200 on five
+— so this is a real obligation, and it belongs in the trusted base beside
+framing and libuv.
+
+The evidence above is reproducible from `Test/Random.lean`.
+
 ## Not proved
 
 - **Liveness** — deliberately out of scope; Raft guarantees none without timing
@@ -382,7 +445,9 @@ one id per operation.
   refusal may have its command committed twice, under two indices; the model
   records both as separate operations. Exactly-once execution would need
   duplicate suppression keyed on the request id, which is not implemented.
-- **Crash recovery** — see "Known unsoundness" below.
+- **Crash recovery** — the crash rule is not in `Step` yet, so no theorem covers
+  a bouncing node. The design is specified (`Protocol.restart`) and measured
+  (above), but not proved. See "Known unsoundness" below.
 
 ## The proved properties, also tested
 
