@@ -45,19 +45,34 @@ reachability is that clients use distinct request ids.
 
 ### Storage, on a device that tears writes
 
-The implementation that justifies the crash rule is proved too. The device model
-keeps, alongside the durable bytes, everything written since the last flush; a
-crash reveals **independently at each address** either the old byte or any value
-written there since — tearing at byte granularity, and writes landing out of
-order. The one thing that cannot tear is a single root cell, which is the
-hardware's aligned-sector guarantee and the only storage assumption.
+The implementation that justifies the crash rule is proved too, on a device
+model with **three** levels of durability rather than two:
 
-On that device, one discipline is proved crash-safe — *write where the live root
-cannot see it; flush; swap the root; flush* — by `Disk.Format.commit_crash_safe`:
-crash at **any** point of a commit and the store holds either the old value or
-the new one, never a mixture. `Disk.crash_recovers_node` bridges it to the model:
-what the device gives back always rebuilds to one of the two node states
-`World.crash` permits.
+| Where a byte is | What a crash does | How it got there |
+|---|---|---|
+| this process's buffer | lost outright | a plain write |
+| the operating system | *may or may not* have landed, per address | `flush` |
+| the platter | survives | `fsync` |
+
+That distinction is the point. A two-level model cannot tell flushing from
+fsyncing, and a proof written against one is satisfied by an implementation that
+only ever flushes — which is broken. So there are two theorems:
+
+* **`Disk.Format.commit_crash_safe`** — crash at **any** of the six points of a
+  commit (`writeAt · flushUser · fsync · setRoot · flushUser · fsync`) and the
+  store holds either the old value or the new one. Never a mixture.
+* **`Disk.flushOnly_not_crash_safe`** — a commit that flushes but never fsyncs
+  is **not** crash-safe: here is a device, a commit, and a crash after which
+  recovery returns *neither* value, because the root swap reached the platter
+  and the image did not.
+
+`Disk.crash_recovers_node` bridges to the model: what the device gives back
+always rebuilds to one of the two node states `World.crash` permits.
+
+Lean's `IO.FS` has no `fsync` — its `flush` is `fflush` — so `RaftKV.Posix` is a
+small FFI binding to `open`, `pread`, `pwrite`, `fsync` and `close`, and the
+store is built on that. It is what makes the implementation match the proof
+rather than approximate it.
 
 The encoding round-trips all the way down (`ByteCodec`), including strings —
 via code points rather than UTF-8, since Lean's core proves no round-trip for
@@ -65,7 +80,7 @@ via code points rather than UTF-8, since Lean's core proves no round-trip for
 
 Everything is `sorry`-free on Lean's three standard axioms. See
 **[PROOFS.md](PROOFS.md)** for the full inventory, the trusted base, and what is
-deliberately *not* proved (liveness, exactly-once client retries, `fsync`).
+deliberately *not* proved (liveness, exactly-once client retries).
 
 ## Run a 3-node cluster
 
@@ -139,14 +154,16 @@ RaftKV/
                          state machine safety, state-machine refinement,
                          linearizability
   Storage/
-    Disk.lean            the device: torn writes, delayed durability, one atomic cell
+    Disk.lean            the device: torn writes, three durability levels, one atomic cell
     Persist.lean         copy-on-write commit, proved crash-safe
     Bytes.lean           ByteCodec, round-trip proved down to String
     NodePersist.lean     the bridge from the store to the model's crash rule
   Runtime/
     Sim.lean             deterministic in-process cluster simulator
+    Posix.lean           FFI: open/pread/pwrite/fsync/close (trusted)
     Store.lean           the durable store on a real filesystem (trusted)
     Server.lean          the I/O shim (trusted)
+c/raftkv_io.c            the C shim behind Posix.lean
 ```
 
 `Test/Sim.lean` runs a 3-node cluster in-process with no sockets — because

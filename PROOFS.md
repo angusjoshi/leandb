@@ -407,33 +407,56 @@ non-zero commit index (vacuous after a restart).
 
 ### The device
 
-`RaftKV.Storage.Disk` models storage adversarially. Alongside the durable bytes
-it keeps everything written since the last flush; a crash reveals,
-**independently at each address**, either the old durable byte or *any* value
-written there since. That permits tearing at byte granularity and permits writes
-to one address to land out of order, so it is at least as adversarial as any
-real device.
+`RaftKV.Storage.Disk` models storage adversarially, and — this is the part that
+matters — it distinguishes **three** places a byte can be, not two:
 
-Nothing can be built on a device where *every* write tears — the commit point
-would never be well defined. Real hardware provides one aligned sector-sized
-write that lands entirely or not at all, and the model provides exactly one such
-thing: the **root cell**. That is the single storage assumption, and it lives in
-the model rather than buried in an implementation.
+| Where | What a crash does | How you get there |
+|---|---|---|
+| **buffered** | lost outright; the kernel never saw it | a plain write |
+| **cached** | *may or may not* have reached the platter, independently at each address | `flushUser` (`fflush`, and Lean's `IO.FS.Handle.flush`) |
+| **stable** | survives | `fsync` |
+
+A two-level model — durable and not-yet-durable — cannot express the difference
+between flushing and fsyncing, and a proof written against it is satisfied by an
+implementation that only ever flushes. That implementation is wrong, and with
+three levels the model says so:
 
 | Theorem | Statement |
 |---|---|
-| `Disk.crash_of_quiet` | A crash cannot disturb a flushed device |
-| `Disk.readRegion_writeBytes_flush` | A flushed run of writes reads back exactly |
-| **`Format.commit_crash_safe`** | **Crash at *any* point of a commit — mid-image, between the flushes, during the root swap — and the store holds either the old value or the new one, quiet and ready for the next commit.** Never a mixture, never garbage |
+| **`Format.commit_crash_safe`** | **Crash at *any* of the six points of a commit and the store holds either the old value or the new one**, quiet and ready for the next commit. Never a mixture, never garbage |
+| **`Disk.flushOnly_not_crash_safe`** | **A commit that flushes but never fsyncs is *not* crash-safe.** Concretely: a device holding `true`, a flush-only commit of `false`, and a crash after which recovery returns **neither** — the root swap reached the platter and the image did not, so the root names a region that was never written |
 | `Format.commit_holds` | A commit that completes leaves the new value in place |
 | `Format.recover_crash` | The client-facing corollary, in terms of `recover` |
-| `twoRegion` | The concrete layout: two images, the root naming the live side and its length |
+| `Disk.crash_of_quiet` | A crash cannot disturb a device with nothing in flight |
+| `Disk.readRegion_writeBytes_sync` | A *synced* run of writes reads back exactly — the un-synced version is false, which is the point |
+
+The commit sequence is therefore six operations, not four:
+
+```
+writeAt   flushUser   fsync   setRoot   flushUser   fsync
+```
+
+and both `fsync`s are load-bearing: the first makes the image durable *before*
+the root can point at it, the second makes the root swap durable. The negative
+theorem above is what stops either from being quietly dropped for speed.
+
+Everything else tears. A crash reveals, **independently at each address**,
+either the old stable byte or any cached value written there since — tearing at
+byte granularity, with writes to one address free to land out of order, which is
+more than any real device does.
+
+Nothing can be built where *every* write tears — the commit point would never be
+well defined. Real hardware provides one aligned sector-sized write that lands
+entirely or not at all, and the model provides exactly one such thing: the
+**root cell**. That is the single storage assumption, and it lives in the model
+rather than buried in an implementation.
 
 The discipline proved safe is copy-on-write: **write where the live root cannot
-see it; flush; swap the root; flush.** The root is abstract, so the same theorem
-covers the two-region superblock used here and an LMDB-style copy-on-write
-B-tree — where the root holds a page number and `alloc` returns a free page —
-which is where log compaction wants to go. Only `regionOf` and `alloc` change.
+see it; flush; fsync; swap the root; flush; fsync.** The root is abstract, so the
+same theorem covers the two-region superblock used here and an LMDB-style
+copy-on-write B-tree — where the root holds a page number and `alloc` returns a
+free page — which is where log compaction wants to go. Only `regionOf` and
+`alloc` change.
 
 ### The bytes
 
@@ -458,7 +481,8 @@ and what it comes back with is always one of the states the model allows.
 ### What is still assumed
 
 1. **Single-word atomicity** — the device's aligned sector-sized write lands
-   entirely or not at all. Stated in the disk model as the root cell.
+   entirely or not at all. Stated in the disk model as the root cell, and
+   obtained in the implementation from `rename`.
 2. **The shim commits before it sends.** The model makes a step's state update
    and its sends atomic; reality does not. Note the asymmetry: crashing and
    losing in-flight messages is already covered, since the network model lets any
@@ -467,7 +491,10 @@ and what it comes back with is always one of the states the model allows.
    that lets messages escape before the durable write lands produces 9
    vote-uniqueness failures in 300 schedules on three nodes and 66 in 200 on
    five, so this is a real obligation, not a theoretical one.
-3. **The log fits in a region.** The two-region format is capacity-bounded;
+   `Node.dispatch` discharges it in one place.
+3. **That the operating system's `fsync` reaches stable storage.** On macOS the
+   FFI shim asks for `F_FULLFSYNC` first, which bypasses the drive's write cache.
+4. **The log fits in a region.** The two-region format is capacity-bounded;
    lifting that is what a copy-on-write B-tree instance is for.
 
 ### Measured before it was proved
@@ -552,19 +579,19 @@ Not verified, and relied upon:
 6. **The device's single-word atomicity** — an aligned sector-sized write lands
    entirely or not at all. Stated inside the disk model as the root cell, rather
    than assumed silently.
-7. **`fsync` is missing.** Lean's `IO.FS` exposes `flush`, which reaches the
-   operating system but not the platter, so a process crash is covered and a
-   power cut is not. One `fsync(2)` binding closes it; nothing else stands
-   between the implementation and the durability the proof assumes.
+7. `RaftKV.Runtime.Posix` and `c/raftkv_io.c` — an FFI binding to `open`,
+   `pread`, `pwrite`, `fsync` and `close`. Lean's `IO.FS` exposes only `flush`,
+   which is `fflush`: it reaches the kernel and stops there, which
+   `Disk.flushOnly_not_crash_safe` proves is not enough. The binding is what
+   makes the implementation match the proof rather than approximate it.
 
 ## Known limits of the running system
 
-Given a data directory the server now persists and recovers the durable trio;
-killing all three nodes of a cluster and restarting them recovers term, vote and
-log, and committed keys read back. Two limits remain:
+Given a data directory the server persists and recovers the durable trio, with
+real `fsync`s at both commit points. Killing all three nodes of a cluster and
+restarting them recovers term, vote and log; committed keys read back, and a
+committed *deletion* stays deleted. One limit remains:
 
-* **No `fsync`** — see the trusted base. Process crashes are covered; power loss
-  is not.
 * **The whole image is rewritten on every durable change**, since the two-region
   format is a full-image copy-on-write. That is O(log size) per append, which is
   fine for correctness and wrong for production. The fix is the copy-on-write

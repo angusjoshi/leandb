@@ -21,15 +21,15 @@ def check : IO (List Bool) := do
   let fresh := (← recover p).isNone
   -- commit, recover, commit again (flipping regions), recover again
   let s1 := sample 3 (some 2) 4
-  commit p s1
+  commit p dir s1
   let r1 ← recover p
   let live1 := (← readRoot p).map Prod.fst
   let s2 := sample 9 none 7
-  commit p s2
+  commit p dir s2
   let r2 ← recover p
   let live2 := (← readRoot p).map Prod.fst
   let s3 := sample 9 (some 0) 0
-  commit p s3
+  commit p dir s3
   let r3 ← recover p
   let live3 := (← readRoot p).map Prod.fst
   -- commits alternate regions, so the live image is never the one being written

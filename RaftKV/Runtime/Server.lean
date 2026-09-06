@@ -51,7 +51,7 @@ structure Node where
   /-- Set when a leader has been heard from since the last election check. -/
   heard : IO.Ref Bool
   /-- Where the durable trio lives, if this replica persists at all. -/
-  store : Option Store.Paths
+  store : Option (Store.Paths × System.FilePath)
 
 /-- Hand an outcome to whoever is waiting on `rid`, if anyone still is. -/
 def Node.resolve (nd : Node) (rid : Nat) (o : Outcome) : Async Unit := do
@@ -97,7 +97,7 @@ def Node.dispatch (nd : Node) (ev : Event) : Async Unit := do
     set s'
     pure (Protocol.persistOf s, Protocol.persistOf s', acts)
   match nd.store with
-  | some paths => if before != after then Store.commit paths after
+  | some (paths, dir) => if before != after then Store.commit paths dir after
   | none => pure ()
   for a in acts do
     nd.exec a
@@ -215,11 +215,11 @@ def Node.httpHandler (nd : Node) : Server.StatelessHandler :=
 /-- Build a replica. -/
 def Node.create (cfg : Config) (peers : List (Nat × Net.SocketAddress))
     (dataDir : Option System.FilePath := none) : IO Node := do
-  let store := dataDir.map (Store.Paths.forNode · cfg.me)
+  let store := dataDir.map (fun d => (Store.Paths.forNode d cfg.me, d))
   let s0 ← match store with
     | none => pure (Protocol.initState (σ := ArrayLog) (κ := HashKV) cfg)
-    | some paths => do
-        IO.FS.createDirAll (dataDir.getD "." )
+    | some (paths, dir) => do
+        IO.FS.createDirAll dir
         let s ← Store.load paths cfg
         IO.println s!"[node {cfg.me}] recovered term={s.currentTerm}           votedFor={repr s.votedFor} entries={LogStore.lastIndex s.log}"
         pure s
