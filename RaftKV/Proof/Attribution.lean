@@ -150,8 +150,9 @@ theorem ackHold_step {members : List Nat} {w w' : World σ κ}
           omega
         obtain ⟨L, lgL, hL1, hL2, hL3⟩ := h v T m lgp h' hpre
         rw [act_full_self]
-        rcases full_step (w.nodes v) (w.full v) ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
-          ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩
+        rcases world_full_step w v ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
+          ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩ |
+          ⟨src, term, lid, lastIdx, anchor, pairs, hev, hi, hct⟩
         · exact ⟨L, lgL, leaderLog_mono hL1, hL2, by rw [hl]; exact hL3⟩
         · -- a client append never disturbs what is already there
           refine ⟨L, lgL, leaderLog_mono hL1, hL2, ?_⟩
@@ -234,6 +235,43 @@ theorem ackHold_step {members : List Nat} {w w' : World σ κ}
             intro k hk
             rw [hl]
             exact splice_agrees hnd hr' hwfV.mono hwfS.mono hpi hchk hS3 hS2 hwfNew k (by omega)
+        · -- an installed snapshot: the sender's own recorded log takes over
+          subst hev
+          obtain ⟨_, hlow, hcom, hcov⟩ := snapInstalls_facts hi
+          have hbr := fullBridge_reachable hr
+          have hterm : term = T := by
+            rw [act_nodes_self, Protocol.step, handleInstallSnapshot_term_eq] at hT
+            omega
+          subst hterm
+          obtain ⟨lg, hrec, hget, hlg1, hfl⟩ :=
+            snapInstall_facts hbr (hdel src _ rfl) hi
+          -- `m` is inside what the snapshot covers, because the acknowledged
+          -- prefix is inside the node's own log
+          have hmle : m ≤ LogStore.lastIndex (w.full v) := by
+            rcases Nat.lt_or_ge (LogStore.lastIndex (w.full v)) m with hq | hq
+            · exfalso
+              have hncL : LogStore.firstIndex lgL = 1 :=
+                (leaderLogWF_reachable hnd hr L term lgL hL1).nocompact
+              have hsome : (LogStore.get lgL m).isSome :=
+                (LogStore.get_isSome_iff lgL m).mpr ⟨by omega, by omega⟩
+              have hnone : LogStore.get (w.full v) m = none := by
+                cases hq2 : LogStore.get (w.full v) m with
+                | none => rfl
+                | some z =>
+                    exfalso
+                    have := ((LogStore.get_isSome_iff (w.full v) m).mp (by rw [hq2]; rfl)).2
+                    omega
+              rw [← hL3 m (Nat.le_refl m), hnone] at hsome
+              exact Bool.noConfusion hsome
+            · exact hq
+          have hml : m ≤ lastIdx := by
+            have := hbr.last v
+            omega
+          refine ⟨src, lg, leaderLog_mono (hbr.slLeader _ _ _ _ _ hrec), ?_, ?_⟩
+          · have := ((LogStore.get_isSome_iff lg lastIdx).mp (by rw [hget]; rfl)).2
+            omega
+          · intro k hk
+            rw [hfl, LogStore.get_truncFrom, if_pos (by omega)]
       · rw [act_nodes_ne _ _ _ hvj] at hT
         rw [act_full_ne _ _ _ hvj]
         obtain ⟨L, lgL, hL1, hL2, hL3⟩ := h v T m lgp h' hT
@@ -346,8 +384,9 @@ theorem changeAttributed_step {members : List Nat} {w w' : World σ κ}
         rw [act_full_self]
         have hmono := act_term_mono w v ev v
         rw [act_nodes_self] at hmono
-        rcases full_step (w.nodes v) (w.full v) ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
-          ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩
+        rcases world_full_step w v ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
+          ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩ |
+          ⟨src, term, lid, lastIdx, anchor, pairs, hev, hi, hct⟩
         · exact ⟨X, tX, lgX, leaderLog_mono hX1, hX2, by omega, hX5,
             by rw [act_nodes_self] at hcarry; exact hcarry, by rw [hl]; exact hX4⟩
         · -- a client append: only the new top index differs
@@ -458,6 +497,39 @@ theorem changeAttributed_step {members : List Nat} {w w' : World σ κ}
                     have := ((LogStore.get_isSome_iff lgS k).mp (by rw [hq]; rfl)).2
                     omega
               rw [h1, h2]
+        · -- an installed snapshot: attribute to the sender's own recorded log
+          subst hev
+          obtain ⟨_, hlow, hcom, hcov⟩ := snapInstalls_facts hi
+          have hbr := fullBridge_reachable hr
+          have hlast : LogStore.lastIndex (w.full v) ≤ lastIdx := by
+            have := hbr.last v; omega
+          obtain ⟨lg, hrec, hget, hlg1, hfl⟩ :=
+            snapInstall_facts hbr (hdel src _ rfl) hi
+          have hlgreach : lastIdx ≤ LogStore.lastIndex lg :=
+            ((LogStore.get_isSome_iff lg lastIdx).mp (by rw [hget]; rfl)).2
+          have hnewterm : (Protocol.step (w.nodes v)
+              (Event.recv src (Msg.installSnapshot term lid lastIdx anchor pairs))).1.currentTerm
+              = max (w.nodes v).currentTerm term := by
+            rw [Protocol.step, handleInstallSnapshot_term_eq]
+          by_cases hkle : k ≤ lastIdx
+          · refine ⟨src, term, lg, leaderLog_mono (hbr.slLeader _ _ _ _ _ hrec), by omega,
+              by rw [hnewterm]; omega, fun _ => by omega, ?_, ?_⟩
+            · intro _
+              rw [Protocol.step]
+              exact handleInstallSnapshot_votedFor_ne _ _ _ _ _ _ hct
+            · rw [hfl, LogStore.get_truncFrom, if_pos (by omega)]
+          · -- past the snapshot, nothing is held either way
+            refine ⟨X, tX, lgX, leaderLog_mono hX1, hX2, by omega, hX5,
+              by rw [act_nodes_self] at hcarry; exact hcarry, ?_⟩
+            have hnone : LogStore.get (w.full v) k = none := by
+              cases hq : LogStore.get (w.full v) k with
+              | none => rfl
+              | some z =>
+                  exfalso
+                  have := ((LogStore.get_isSome_iff (w.full v) k).mp (by rw [hq]; rfl)).2
+                  omega
+            rw [hfl, LogStore.get_truncFrom, if_neg (by omega), ← hnone]
+            exact hX4
       · rw [act_nodes_ne _ _ _ hvj] at hcarry ⊢
         rw [act_full_ne _ _ _ hvj]
         exact ⟨X, tX, lgX, leaderLog_mono hX1, hX2, hX3, hX5, hcarry, hX4⟩
@@ -644,6 +716,7 @@ theorem voteAttributed_step {members : List Nat} {w w' : World σ κ}
             | requestVote a b c d => simp at heq
             | appendEntries a b c d e f => simp at heq
             | appendEntriesResp a b c => simp at heq
+            | installSnapshot a b c d e => simp at heq
             | requestVoteResp t g =>
                 cases g with
                 | false => simp at heq

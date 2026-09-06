@@ -313,6 +313,7 @@ theorem mem_voteLogOf {i v t : Nat} {lg fl : σ} {s : NodeState σ κ} {acts : L
       | requestVote a b c d => simp at heq
       | appendEntries a b c d e f => simp at heq
       | appendEntriesResp a b c => simp at heq
+      | installSnapshot a b c d e => simp at heq
       | requestVoteResp t2 g =>
           cases g with
           | false => simp at heq
