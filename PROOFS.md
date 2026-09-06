@@ -544,13 +544,28 @@ Not verified, and relied upon:
    re-decodes every outgoing message so a framing fault fails loudly at the
    sender instead of corrupting a peer.
 4. `RaftKV.Runtime.Server` — the I/O shim. It makes no protocol decisions; it
-   converts sockets and timers into `Event`s and executes `Action`s.
+   converts sockets and timers into `Event`s and executes `Action`s. It carries
+   one obligation the model cannot check: **it commits the durable trio before
+   executing any action of a step.** `Node.dispatch` does this in one place.
+5. `RaftKV.Runtime.Store` — the durable store on a real filesystem. It performs
+   exactly `Format.commitOps`, with `rename` as the atomic root swap.
+6. **The device's single-word atomicity** — an aligned sector-sized write lands
+   entirely or not at all. Stated inside the disk model as the root cell, rather
+   than assumed silently.
+7. **`fsync` is missing.** Lean's `IO.FS` exposes `flush`, which reaches the
+   operating system but not the platter, so a process crash is covered and a
+   power cut is not. One `fsync(2)` binding closes it; nothing else stands
+   between the implementation and the durability the proof assumes.
 
-## Known unsoundness in the running system
+## Known limits of the running system
 
-**The running server has no durable storage yet.** The design is proved — see
-"Crashes and the device" — but the `IO` code that drives a real file is not
-written, so the binary you can run today still keeps `currentTerm`, `votedFor`
-and the log in memory only. A restarted replica can therefore vote twice in one
-term, which is exactly what the model now forbids. Until the store is wired in,
-treat a restarted replica as a new node, and do not run this as a real datastore.
+Given a data directory the server now persists and recovers the durable trio;
+killing all three nodes of a cluster and restarting them recovers term, vote and
+log, and committed keys read back. Two limits remain:
+
+* **No `fsync`** — see the trusted base. Process crashes are covered; power loss
+  is not.
+* **The whole image is rewritten on every durable change**, since the two-region
+  format is a full-image copy-on-write. That is O(log size) per append, which is
+  fine for correctness and wrong for production. The fix is the copy-on-write
+  B-tree instance of the same `Format`, which is also what log compaction wants.
