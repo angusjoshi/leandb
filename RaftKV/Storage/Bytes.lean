@@ -118,6 +118,13 @@ same order. The round-trip law composes because every decoder consumes exactly
 its own bytes, which is what the `rest` in the law is for.
 -/
 
+instance : ByteCodec UInt8 where
+  enc b := [b]
+  dec
+    | [] => none
+    | b :: bs => some (b, bs)
+  dec_enc := by intro a rest; rfl
+
 instance : ByteCodec Bool where
   enc b := [if b then 1 else 0]
   dec
@@ -291,6 +298,49 @@ instance : ByteCodec Entry where
     dsimp only
     rw [dec_enc e.reqId rest]
 
+
+
+instance {α : Type} [ByteCodec α] : ByteCodec (Array α) where
+  enc a := enc a.toList
+  dec bs :=
+    match (dec bs : Option (List α × List UInt8)) with
+    | none => none
+    | some (l, r) => some (l.toArray, r)
+  dec_enc := by
+    intro a rest
+    show (match (dec (enc a.toList ++ rest) : Option (List α × List UInt8)) with
+      | none => none | some (l, r) => some (l.toArray, r)) = _
+    rw [dec_enc a.toList rest]
+
+/-- Length-prefixed bytes. -/
+instance : ByteCodec ByteArray where
+  enc b := enc b.data
+  dec bs :=
+    match (dec bs : Option (Array UInt8 × List UInt8)) with
+    | none => none
+    | some (a, r) => some ((⟨a⟩ : ByteArray), r)
+  dec_enc := by
+    intro b rest
+    show (match (dec (enc b.data ++ rest) : Option (Array UInt8 × List UInt8)) with
+      | none => none | some (a, r) => some ((⟨a⟩ : ByteArray), r)) = _
+    rw [dec_enc b.data rest]
+
+instance {α β : Type} [ByteCodec α] [ByteCodec β] : ByteCodec (α × β) where
+  enc p := enc p.1 ++ enc p.2
+  dec bs :=
+    match (dec bs : Option (α × List UInt8)) with
+    | none => none
+    | some (a, r) =>
+        match (dec r : Option (β × List UInt8)) with
+        | none => none
+        | some (b, r') => some ((a, b), r')
+  dec_enc := by
+    intro p rest
+    show (match (dec ((enc p.1 ++ enc p.2) ++ rest) : Option (α × List UInt8)) with
+      | none => none | some (a, r) => _) = _
+    rw [List.append_assoc, dec_enc p.1 (enc p.2 ++ rest)]
+    dsimp only
+    rw [dec_enc p.2 rest]
 
 /-! ## The durable state
 

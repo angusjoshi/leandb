@@ -494,8 +494,54 @@ and what it comes back with is always one of the states the model allows.
    `Node.dispatch` discharges it in one place.
 3. **That the operating system's `fsync` reaches stable storage.** On macOS the
    FFI shim asks for `F_FULLFSYNC` first, which bypasses the drive's write cache.
-4. **The log fits in a region.** The two-region format is capacity-bounded;
-   lifting that is what a copy-on-write B-tree instance is for.
+4. **The log fits in a region.** The two-region format used by the node store is
+   capacity-bounded. The copy-on-write B-tree below lifts that limit and is what
+   log compaction wants; it is implemented and tested but not yet the node
+   store's format.
+
+### The copy-on-write B-tree
+
+`RaftKV/Storage/BTree.lean` is the store the two-region format cannot be: it
+commits by writing only the pages it changed, so an append costs a root-to-leaf
+path rather than the whole image. `RaftKV/Runtime/PageFile.lean` puts it on a
+real file, with the same commit sequence the theorem above is about — write the
+new pages, `fsync`, write the root cell, `rename` it into place, `fsync` the
+directory.
+
+It follows the same discipline the proof requires, and by construction rather
+than by invariant:
+
+* pages are allocated by bumping a high-water mark kept in the root cell, so a
+  commit only ever writes at or above the *old* mark;
+* the reader refuses to follow any pointer at or above that mark;
+* therefore nothing the live root can reach is ever overwritten, which is the
+  `fresh` law, and a crash mid-commit leaves the old tree bit-identical.
+
+That last claim is tested rather than assumed: for every prefix of a commit's
+page writes, with the rest of the commit's page range filled with garbage and
+the root cell not yet swapped, the old root still reads exactly the tree it read
+before. On a real file, filling twenty pages above the high-water mark with
+`0xa5` changes nothing a reader sees.
+
+**Checksums.** Every page carries a CRC-32 over its own bytes together with the
+page number it is meant to be, and a page failing either check reads as `none`
+rather than as a node with a plausible pointer in it. The page number is inside
+the checksummed region on purpose: a misdirected write produces bytes whose own
+CRC is perfectly valid, and only the recorded page number catches it. Tested
+against a flipped bit, a torn write, a lost final sector, and a valid page read
+from the wrong place.
+
+**Deliberately not proved yet.** The checksums are not part of the crash-safety
+argument — that argument rules out *reading* a torn page at all, by never
+overwriting what the live root reaches, and the checksum is defence in depth for
+the failures the model does not claim to cover (bit rot, misdirected writes, a
+device that ignores its own barriers). Nor is `Format.correct` — that the tree
+returns what you put in it — proved; it is a statement about search, not about
+durability, and it is tested.
+
+**Limits, stated.** Values must fit in a page (no overflow chains); deletion does
+not rebalance; and pages left behind by a commit are not reclaimed, because a
+free list needs its own crash-safety argument.
 
 ### Measured before it was proved
 
@@ -532,10 +578,12 @@ rate is exactly the kind that survives a test suite and bites in production.
   refusal may have its command committed twice, under two indices; the model
   records both as separate operations. Exactly-once execution would need
   duplicate suppression keyed on the request id, which is not implemented.
-- **The I/O implementation of the store.** The disk model, the commit
-  discipline, the encoding and the bridge to the crash rule are all proved; what
-  is not yet written is the `IO` code that drives a real file, and the server
-  still runs without persistence. See "Known unsoundness" below.
+- **The `IO` code that drives a real file.** The disk model, the commit
+  discipline, the encoding and the bridge to the crash rule are all proved; the
+  shims that move the bytes (`RaftKV.Runtime.Store`, `RaftKV.Runtime.PageFile`,
+  `RaftKV.Posix`) are trusted, and listed as such below.
+- **The copy-on-write B-tree.** Its page layout, checksums, search and
+  copy-on-write updates are implemented and tested, not proved. See below.
 
 ## The proved properties, also tested
 
@@ -576,6 +624,8 @@ Not verified, and relied upon:
    executing any action of a step.** `Node.dispatch` does this in one place.
 5. `RaftKV.Runtime.Store` — the durable store on a real filesystem. It performs
    exactly `Format.commitOps`, with `rename` as the atomic root swap.
+   `RaftKV.Runtime.PageFile`, the B-tree's shim, is trusted on the same footing
+   and performs the same sequence.
 6. **The device's single-word atomicity** — an aligned sector-sized write lands
    entirely or not at all. Stated inside the disk model as the root cell, rather
    than assumed silently.
@@ -594,5 +644,6 @@ committed *deletion* stays deleted. One limit remains:
 
 * **The whole image is rewritten on every durable change**, since the two-region
   format is a full-image copy-on-write. That is O(log size) per append, which is
-  fine for correctness and wrong for production. The fix is the copy-on-write
-  B-tree instance of the same `Format`, which is also what log compaction wants.
+  fine for correctness and wrong for production. The copy-on-write B-tree is
+  built and tested; making it the node store's format — and with it, log
+  compaction — is the next step.

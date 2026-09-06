@@ -158,10 +158,13 @@ RaftKV/
     Persist.lean         copy-on-write commit, proved crash-safe
     Bytes.lean           ByteCodec, round-trip proved down to String
     NodePersist.lean     the bridge from the store to the model's crash rule
+    Crc32.lean           CRC-32, checked against the standard vectors
+    BTree.lean           copy-on-write B-tree with checksummed pages
   Runtime/
     Sim.lean             deterministic in-process cluster simulator
     Posix.lean           FFI: open/pread/pwrite/fsync/close (trusted)
     Store.lean           the durable store on a real filesystem (trusted)
+    PageFile.lean        the B-tree on a real file (trusted)
     Server.lean          the I/O shim (trusted)
 c/raftkv_io.c            the C shim behind Posix.lean
 ```
