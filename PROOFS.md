@@ -13,10 +13,10 @@ import RaftKV
 X
 ```
 
-**Status: all four of Raft's safety properties are proved, and the store is
-proved linearizable** (`Proof.linearizable`) — every answer the cluster ever
-gave is the answer a single sequential key/value store would have given, in one
-order that never contradicts real time. See below.
+**Status: all four of Raft's safety properties are proved, the store is proved
+linearizable** (`Proof.linearizable`), and both hold in a model that includes
+**node crashes** — with the durable implementation proved crash-safe on a device
+that tears writes (`Disk.Format.commit_crash_safe`). See below.
 
 ## Proved
 
@@ -374,40 +374,113 @@ places none either — which is exactly why request ids exist and why a client
 must retry with the same id. `FreshIds` is the client's half of the contract:
 one id per operation.
 
-## Crashes — tested, not yet proved
+## Crashes and the device
 
-The proved theorems cover a model with **no crash rule**: `Step` has four
-constructors (`deliver`, `electionTimeout`, `heartbeat`, `client`), all of which
-go through `World.act`, and nothing ever resets a node. So the model does not
-merely omit crashes — it *implicitly assumes all state is durable*, which is why
-the missing `fsync` does not show up as a failed proof.
+The crash rule is now **in the model**, and the implementation that justifies it
+is proved on a device with realistic failure semantics.
 
-`Protocol.restart` states the intended crash semantics as a pure function:
-Raft's durable trio (`currentTerm`, `votedFor`, the log) survives; role, commit
-and applied indices, the state machine, peer progress and pending requests are
-rebuilt. Coming back as a *follower* is what makes it cheap to reason about — it
-discards any candidacy in flight, and the only route back to candidacy
-(`startElection`) strictly advances the term, so a node can never campaign twice
-in one term.
+### The model
 
-Before re-doing the proofs under a crash rule, the design was measured. The
-simulator gained crash events, and the checks were re-phrased over **histories**
-— every entry ever applied, every vote ever granted, every reply ever sent —
-because a restart zeroes `lastApplied` and a final-state check simply stops
-seeing anything that happened before a crash. That re-phrasing was not
-cosmetic: against a system with no persistence at all, the three final-state
-checks (`electionSafe`, `entriesAgree`, `prefixesAgree`) report **zero**
-failures in 500 schedules, because a node that forgot its log cannot disagree
-with anyone.
+`Step` has a fifth rule, `crash`, defined by `Protocol.restart`: Raft's durable
+trio (`currentTerm`, `votedFor`, the log) survives and everything else is
+rebuilt. No ghost list moves — a crash transmits nothing, votes for no one,
+commits nothing and answers no client, it only forgets. Messages in flight are
+untouched, because the network model already permits any packet never to be
+delivered.
 
-**Result — the design holds.** Zero failures across 710 schedules with crashes
-(300 × 400 steps on 3 nodes, 200 × 800 on 5, 60 × 1200, 150 × 600), on durable
-State Machine Safety, vote uniqueness, and linearizability's reply clause. The
-sweep is not vacuous under crashes: 63/100 runs still end with an elected
-leader, with 1754 entries applied and 395 replies sent across a 100-seed sample.
+Every theorem conditioned on `Reachable` therefore covers arbitrary crash
+sequences, including all four safety properties and `linearizable`.
 
-**Which durability obligations are load-bearing** (failures out of 300
-schedules, 3 nodes):
+Three invariants were genuinely false under crashes; the rest were one to five
+lines each.
+
+| Was | Why it broke | Replacement |
+|---|---|---|
+| `LedLeader` — a recorded leader still leads at its term | a leader comes back a follower | **`LedNotCandidate`** — it can never *campaign* in that term again, since the only road to candidacy is `startElection`, which advances the term (`step_candidate_term`) |
+| `leader_stable` — a leader keeps its role while its term stands | same | a third disjunct for the crash, and callers routed through **`led_log_stable`**: a node that has led `t` keeps its log while its term is `t`. That survives for a better reason — a log shrinks only by accepting an `appendEntries`, a same-term payload could only have come from the term's winner, which is this node, and no packet is self-addressed |
+| `led_not_leader_term_gt` | a crashed leader is not a leader | `led_not_candidate_term_gt`, reached via `leader_from_candidate` |
+
+Everything else fell into three shapes: purely ghost invariants (untouched),
+invariants over the durable fields (untouched — which is the whole point of
+persisting them), and invariants conditioned on being a non-follower or on a
+non-zero commit index (vacuous after a restart).
+
+### The device
+
+`RaftKV.Storage.Disk` models storage adversarially. Alongside the durable bytes
+it keeps everything written since the last flush; a crash reveals,
+**independently at each address**, either the old durable byte or *any* value
+written there since. That permits tearing at byte granularity and permits writes
+to one address to land out of order, so it is at least as adversarial as any
+real device.
+
+Nothing can be built on a device where *every* write tears — the commit point
+would never be well defined. Real hardware provides one aligned sector-sized
+write that lands entirely or not at all, and the model provides exactly one such
+thing: the **root cell**. That is the single storage assumption, and it lives in
+the model rather than buried in an implementation.
+
+| Theorem | Statement |
+|---|---|
+| `Disk.crash_of_quiet` | A crash cannot disturb a flushed device |
+| `Disk.readRegion_writeBytes_flush` | A flushed run of writes reads back exactly |
+| **`Format.commit_crash_safe`** | **Crash at *any* point of a commit — mid-image, between the flushes, during the root swap — and the store holds either the old value or the new one, quiet and ready for the next commit.** Never a mixture, never garbage |
+| `Format.commit_holds` | A commit that completes leaves the new value in place |
+| `Format.recover_crash` | The client-facing corollary, in terms of `recover` |
+| `twoRegion` | The concrete layout: two images, the root naming the live side and its length |
+
+The discipline proved safe is copy-on-write: **write where the live root cannot
+see it; flush; swap the root; flush.** The root is abstract, so the same theorem
+covers the two-region superblock used here and an LMDB-style copy-on-write
+B-tree — where the root holds a page number and `alloc` returns a free page —
+which is where log compaction wants to go. Only `regionOf` and `alloc` change.
+
+### The bytes
+
+`RaftKV.ByteCodec` serialises the durable state, with the round-trip law proved
+all the way down. Numbers use LEB128, proved; strings go through their code
+points using core's `String.ofList_toList` and `Char.ofNat_toNat`, rather than
+UTF-8, precisely because core proves no round-trip for `String.fromUTF8?` and
+using it would have added a trusted law.
+
+### The bridge
+
+| Theorem | Statement |
+|---|---|
+| `Protocol.restart_eq_recoverNode` | Restarting is exactly recovering from the durable projection |
+| **`Disk.crash_recovers_node`** | **If the device holds a node's durable projection and a commit is in progress, a crash at any point yields a state that rebuilds to `restart s` or `restart s'` — the two outcomes `World.crash` permits, and nothing else** |
+| `Disk.nodeFormat_crash_recovers` | The same, specialised to the concrete two-region store over `ArrayLog`, with nothing abstract left |
+
+So the two halves meet: the model may crash a node at any *step* and every
+safety theorem survives; the implementation may crash at any *byte* of a commit
+and what it comes back with is always one of the states the model allows.
+
+### What is still assumed
+
+1. **Single-word atomicity** — the device's aligned sector-sized write lands
+   entirely or not at all. Stated in the disk model as the root cell.
+2. **The shim commits before it sends.** The model makes a step's state update
+   and its sends atomic; reality does not. Note the asymmetry: crashing and
+   losing in-flight messages is already covered, since the network model lets any
+   packet never be delivered — the dangerous direction is state loss with the
+   send surviving, and no network nondeterminism models it. Simulating a shim
+   that lets messages escape before the durable write lands produces 9
+   vote-uniqueness failures in 300 schedules on three nodes and 66 in 200 on
+   five, so this is a real obligation, not a theoretical one.
+3. **The log fits in a region.** The two-region format is capacity-bounded;
+   lifting that is what a copy-on-write B-tree instance is for.
+
+### Measured before it was proved
+
+Before any of the above was attempted, the design was checked in the simulator,
+with the safety checks re-phrased over **histories** — every entry ever applied,
+every vote ever granted, every reply ever sent — because a restart zeroes
+`lastApplied` and a final-state check simply stops seeing anything before a
+crash. That re-phrasing was not cosmetic: against a system with no persistence,
+the three final-state checks report **zero** failures in 500 schedules, because
+a node that forgot its log cannot disagree with anyone.
+
+Failures out of 300 schedules on 3 nodes, by what a restart keeps:
 
 | restart keeps | applied-history | vote-uniqueness | replies-vs-spec |
 |---|---|---|---|
@@ -415,27 +488,14 @@ schedules, 3 nodes):
 | forgets `votedFor` | 0 | 2 | 0 |
 | forgets `currentTerm` | 0 | 50 | 0 |
 | forgets the log | 100 | 0 | 45 |
-| forgets everything (today's server) | 84 | 48 | 32 |
+| forgets everything | 84 | 48 | 32 |
 
-All three fields are load-bearing, and they fail in different ways. Forgetting
+All three fields are load-bearing and fail differently. Forgetting
 `currentTerm` breaks *voting* even though `votedFor` survived: a node back at
-term 0 treats almost any incoming request as newer, steps down, and `stepDown`
-clears the vote. Forgetting `votedFor` alone fails on only 2 schedules in 300 —
-a useful reminder that testing does not substitute for the proof, since a 0.7%
-failure rate is exactly the kind that survives a test suite and bites in
-production.
-
-**The shim must persist before it sends.** The model makes a step's state update
-and its sends atomic; reality does not. Note the asymmetry: crashing and losing
-in-flight messages is already covered, because the network model lets any packet
-never be delivered. The dangerous direction is state loss with the send
-surviving, and no amount of network nondeterminism models it. Simulating a shim
-that lets messages escape before the durable write lands produces 9
-vote-uniqueness failures in 300 schedules on three nodes and 66 in 200 on five
-— so this is a real obligation, and it belongs in the trusted base beside
-framing and libuv.
-
-The evidence above is reproducible from `Test/Random.lean`.
+term 0 treats almost any request as newer, steps down, and `stepDown` clears the
+vote. Forgetting `votedFor` alone fails on only 2 schedules in 300 — a useful
+reminder that testing does not substitute for the proof, since a 0.7% failure
+rate is exactly the kind that survives a test suite and bites in production.
 
 ## Not proved
 
@@ -445,9 +505,10 @@ The evidence above is reproducible from `Test/Random.lean`.
   refusal may have its command committed twice, under two indices; the model
   records both as separate operations. Exactly-once execution would need
   duplicate suppression keyed on the request id, which is not implemented.
-- **Crash recovery** — the crash rule is not in `Step` yet, so no theorem covers
-  a bouncing node. The design is specified (`Protocol.restart`) and measured
-  (above), but not proved. See "Known unsoundness" below.
+- **The I/O implementation of the store.** The disk model, the commit
+  discipline, the encoding and the bridge to the crash rule are all proved; what
+  is not yet written is the `IO` code that drives a real file, and the server
+  still runs without persistence. See "Known unsoundness" below.
 
 ## The proved properties, also tested
 
@@ -487,10 +548,9 @@ Not verified, and relied upon:
 
 ## Known unsoundness in the running system
 
-**There is no durable storage.** `currentTerm`, `votedFor` and the log live in
-memory only. Real Raft requires these to be persisted before responding, because
-a node that restarts and forgets its vote can vote twice in one term — exactly
-what `vote_uniqueness` forbids in the model. The model does not include crashes,
-so it does not detect this; the gap is real and is what the `Durability` seam
-exists to close. Until then, treat a restarted replica as a new node, and do not
-run this as a real datastore.
+**The running server has no durable storage yet.** The design is proved — see
+"Crashes and the device" — but the `IO` code that drives a real file is not
+written, so the binary you can run today still keeps `currentTerm`, `votedFor`
+and the log in memory only. A restarted replica can therefore vote twice in one
+term, which is exactly what the model now forbids. Until the store is wired in,
+treat a restarted replica as a new node, and do not run this as a real datastore.

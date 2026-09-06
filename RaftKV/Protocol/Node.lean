@@ -55,9 +55,28 @@ discards any candidacy or leadership in flight, and the only route back to
 candidacy (`startElection`) strictly advances the term, so a node can never
 campaign twice in one term.
 -/
-def restart (s : NodeState σ κ) : NodeState σ κ :=
-  { (initState s.cfg : NodeState σ κ) with
-      currentTerm := s.currentTerm, votedFor := s.votedFor, log := s.log }
+structure Persistent (σ : Type) where
+  /-- The latest term this node has seen. -/
+  currentTerm : Nat
+  /-- Who it voted for in that term, if anyone. -/
+  votedFor : Option Nat
+  /-- The replicated log. -/
+  log : σ
+
+/-- The part of a node's state that must outlive a crash. -/
+def persistOf (s : NodeState σ κ) : Persistent σ :=
+  ⟨s.currentTerm, s.votedFor, s.log⟩
+
+/-- Rebuild a node from its configuration and whatever the device gave back. -/
+def recoverNode (cfg : Config) (p : Persistent σ) : NodeState σ κ :=
+  { (initState cfg : NodeState σ κ) with
+      currentTerm := p.currentTerm, votedFor := p.votedFor, log := p.log }
+
+def restart (s : NodeState σ κ) : NodeState σ κ := recoverNode s.cfg (persistOf s)
+
+/-- **Restarting is exactly recovering from the durable projection.** -/
+theorem restart_eq_recoverNode (s : NodeState σ κ) :
+    restart s = recoverNode s.cfg (persistOf s) := rfl
 
 /-! ## Helpers -/
 
