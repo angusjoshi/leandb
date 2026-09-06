@@ -90,14 +90,20 @@ def Disk.read (d : Disk α) (a : Nat) : UInt8 :=
 def Disk.readRoot (d : Disk α) : α :=
   ((d.rootCached ++ d.rootBuffered).getLast?).getD d.root
 
-/-- Write one byte into this process's buffer. -/
-def Disk.write1 (d : Disk α) (a : Nat) (v : UInt8) : Disk α :=
-  { d with buffered := d.buffered ++ [(a, v)] }
+/--
+Write a set of bytes into this process's buffer.
 
-/-- Write a run of bytes starting at `a`. Individual bytes may land independently. -/
-def Disk.writeBytes : Disk α → Nat → List UInt8 → Disk α
-  | d, _, [] => d
-  | d, a, v :: vs => (d.write1 a v).writeBytes (a + 1) vs
+A commit is described by *which addresses get which bytes*, not by a contiguous
+run: a copy-on-write B-tree writes a scattered set of pages, and a two-region
+superblock writes one run, and both are lists of `(address, byte)`.
+-/
+def Disk.writeMany (d : Disk α) (ws : List (Nat × UInt8)) : Disk α :=
+  { d with buffered := d.buffered ++ ws }
+
+/-- The writes that lay `bs` down starting at `base`. -/
+def imgWrites : Nat → List UInt8 → List (Nat × UInt8)
+  | _, [] => []
+  | a, v :: vs => (a, v) :: imgWrites (a + 1) vs
 
 /-- Write the root cell. This is the one write that cannot tear. -/
 def Disk.writeRoot (d : Disk α) (r : α) : Disk α :=
@@ -186,110 +192,76 @@ theorem overlay_snoc (base : Nat → UInt8) (ws : List (Nat × UInt8)) (a : Nat)
     overlay base (ws ++ [(a, v)]) = fun x => if x = a then v else overlay base ws x := by
   rw [overlay_append]; rfl
 
-@[simp] theorem write1_read_self (d : Disk α) (a : Nat) (v : UInt8) :
-    (d.write1 a v).read a = v := by
-  unfold Disk.read Disk.write1
-  dsimp only
-  rw [overlay_snoc]
-  simp
+@[simp] theorem writeMany_stable (d : Disk α) (ws : List (Nat × UInt8)) :
+    (d.writeMany ws).stable = d.stable := rfl
+@[simp] theorem writeMany_cached (d : Disk α) (ws : List (Nat × UInt8)) :
+    (d.writeMany ws).cached = d.cached := rfl
+@[simp] theorem writeMany_buffered (d : Disk α) (ws : List (Nat × UInt8)) :
+    (d.writeMany ws).buffered = d.buffered ++ ws := rfl
+@[simp] theorem writeMany_root (d : Disk α) (ws : List (Nat × UInt8)) :
+    (d.writeMany ws).root = d.root := rfl
+@[simp] theorem writeMany_rootCached (d : Disk α) (ws : List (Nat × UInt8)) :
+    (d.writeMany ws).rootCached = d.rootCached := rfl
+@[simp] theorem writeMany_rootBuffered (d : Disk α) (ws : List (Nat × UInt8)) :
+    (d.writeMany ws).rootBuffered = d.rootBuffered := rfl
 
-theorem write1_read_ne (d : Disk α) {x a : Nat} (v : UInt8) (h : x ≠ a) :
-    (d.write1 a v).read x = d.read x := by
-  unfold Disk.read Disk.write1
-  dsimp only
-  rw [overlay_snoc]
-  simp [h]
+@[simp] theorem writeMany_readRoot (d : Disk α) (ws : List (Nat × UInt8)) :
+    (d.writeMany ws).readRoot = d.readRoot := rfl
 
-@[simp] theorem write1_root (d : Disk α) (a : Nat) (v : UInt8) :
-    (d.write1 a v).root = d.root := rfl
-@[simp] theorem write1_stable (d : Disk α) (a : Nat) (v : UInt8) :
-    (d.write1 a v).stable = d.stable := rfl
-@[simp] theorem write1_cached (d : Disk α) (a : Nat) (v : UInt8) :
-    (d.write1 a v).cached = d.cached := rfl
-@[simp] theorem write1_rootCached (d : Disk α) (a : Nat) (v : UInt8) :
-    (d.write1 a v).rootCached = d.rootCached := rfl
+/-- Overlaying writes that miss an address leaves it alone. -/
+theorem overlay_of_not_mem {base : Nat → UInt8} : ∀ (ws : List (Nat × UInt8)) (a : Nat),
+    (∀ v, (a, v) ∉ ws) → overlay base ws a = base a := by
+  intro ws
+  induction ws generalizing base with
+  | nil => intro a _; rfl
+  | cons w ws ih =>
+      intro a h
+      cases w with
+      | mk x v =>
+          rw [overlay, ih a (fun v' hv' => h v' (List.mem_cons_of_mem _ hv'))]
+          have : a ≠ x := by
+            intro hc; exact h v (by rw [hc]; exact List.mem_cons_self)
+          simp [this]
 
-/-- A write outside a run leaves it alone. -/
-theorem writeBytes_read_of_lt : ∀ (bs : List UInt8) (d : Disk α) (base x : Nat),
-    x < base → (d.writeBytes base bs).read x = d.read x := by
+/-! ### Laying an image down at an address -/
+
+theorem mem_imgWrites : ∀ (bs : List UInt8) (b a : Nat) (v : UInt8),
+    (a, v) ∈ imgWrites b bs → b ≤ a ∧ a < b + bs.length := by
   intro bs
   induction bs with
-  | nil => intro d base x _; rfl
-  | cons v vs ih =>
-      intro d base x h
-      rw [Disk.writeBytes, ih _ _ _ (by omega), write1_read_ne _ _ (by omega)]
+  | nil => intro b a v h; exact absurd h (by simp [imgWrites])
+  | cons x xs ih =>
+      intro b a v h
+      rw [imgWrites] at h
+      rcases List.mem_cons.mp h with h' | h'
+      · have : a = b := congrArg (fun p => p.1) h'
+        simp only [List.length_cons]; omega
+      · have := ih (b + 1) a v h'
+        simp only [List.length_cons]; omega
 
-theorem writeBytes_read_of_ge : ∀ (bs : List UInt8) (d : Disk α) (base x : Nat),
-    base + bs.length ≤ x → (d.writeBytes base bs).read x = d.read x := by
+theorem overlay_imgWrites_get : ∀ (bs : List UInt8) (base : Nat → UInt8) (b i : Nat)
+    (h : i < bs.length), overlay base (imgWrites b bs) (b + i) = bs[i]'h := by
   intro bs
   induction bs with
-  | nil => intro d base x _; rfl
+  | nil => intro base b i h; exact absurd h (by simp)
   | cons v vs ih =>
-      intro d base x h
-      simp only [List.length_cons] at h
-      rw [Disk.writeBytes, ih _ _ _ (by omega), write1_read_ne _ _ (by omega)]
-
-/-- Inside the run, a read gives back exactly what was written. -/
-theorem writeBytes_read_get : ∀ (bs : List UInt8) (d : Disk α) (base i : Nat) (h : i < bs.length),
-    (d.writeBytes base bs).read (base + i) = bs[i] := by
-  intro bs
-  induction bs with
-  | nil => intro _ _ _ h; exact absurd h (by simp)
-  | cons v vs ih =>
-      intro d base i h
+      intro base b i h
       cases i with
       | zero =>
-          rw [Disk.writeBytes, writeBytes_read_of_lt _ _ _ _ (by omega)]
-          simpa using write1_read_self d base v
+          rw [imgWrites, show b + 0 = b by omega]
+          show overlay (fun x => if x = b then v else base x) (imgWrites (b + 1) vs) b = _
+          rw [overlay_of_not_mem _ b ?_]
+          · simp
+          · intro w hw
+            have := mem_imgWrites _ _ _ _ hw
+            omega
       | succ i =>
           have h' : i < vs.length := by simpa using h
-          have := ih (d.write1 base v) (base + 1) i h'
-          rw [Disk.writeBytes, show base + (i + 1) = base + 1 + i by omega]
-          simpa using this
-
-@[simp] theorem writeBytes_stable : ∀ (bs : List UInt8) (d : Disk α) (base : Nat),
-    (d.writeBytes base bs).stable = d.stable := by
-  intro bs; induction bs with
-  | nil => intro d base; rfl
-  | cons v vs ih => intro d base; rw [Disk.writeBytes, ih]; rfl
-
-@[simp] theorem writeBytes_cached : ∀ (bs : List UInt8) (d : Disk α) (base : Nat),
-    (d.writeBytes base bs).cached = d.cached := by
-  intro bs; induction bs with
-  | nil => intro d base; rfl
-  | cons v vs ih => intro d base; rw [Disk.writeBytes, ih]; rfl
-
-@[simp] theorem writeBytes_root : ∀ (bs : List UInt8) (d : Disk α) (base : Nat),
-    (d.writeBytes base bs).root = d.root := by
-  intro bs; induction bs with
-  | nil => intro d base; rfl
-  | cons v vs ih => intro d base; rw [Disk.writeBytes, ih]; rfl
-
-@[simp] theorem writeBytes_rootCached : ∀ (bs : List UInt8) (d : Disk α) (base : Nat),
-    (d.writeBytes base bs).rootCached = d.rootCached := by
-  intro bs; induction bs with
-  | nil => intro d base; rfl
-  | cons v vs ih => intro d base; rw [Disk.writeBytes, ih]; rfl
-
-/-- Everything a run of writes leaves in flight lies inside the run. -/
-theorem mem_writeBytes_buffered : ∀ (bs : List UInt8) (d : Disk α) (base a : Nat) (v : UInt8),
-    (a, v) ∈ (d.writeBytes base bs).buffered →
-    (a, v) ∈ d.buffered ∨ (base ≤ a ∧ a < base + bs.length) := by
-  intro bs
-  induction bs with
-  | nil => intro d base a v h; exact Or.inl h
-  | cons x xs ih =>
-      intro d base a v h
-      rw [Disk.writeBytes] at h
-      rcases ih (d.write1 base x) (base + 1) a v h with h' | h'
-      · rcases List.mem_append.mp h' with h'' | h''
-        · exact Or.inl h''
-        · right
-          have := List.mem_singleton.mp h''
-          have ha : a = base := congrArg (fun p => p.1) this
-          simp only [List.length_cons]
-          omega
-      · right; simp only [List.length_cons]; omega
+          rw [imgWrites, show b + (i + 1) = b + 1 + i by omega]
+          show overlay (fun x => if x = b then v else base x) (imgWrites (b + 1) vs) (b + 1 + i)
+            = (v :: vs)[i + 1]
+          rw [show ((v :: vs)[i + 1] : UInt8) = vs[i] from rfl]
+          exact ih _ (b + 1) i h'
 
 /-! ## Where each operation leaves things -/
 
@@ -345,16 +317,7 @@ theorem mem_writeBytes_buffered : ∀ (bs : List UInt8) (d : Disk α) (base a : 
 @[simp] theorem writeRoot_root_eq (d : Disk α) (r : α) : (d.writeRoot r).root = d.root := rfl
 @[simp] theorem writeRoot_stable_eq (d : Disk α) (r : α) (a : Nat) :
     (d.writeRoot r).stable a = d.stable a := rfl
-@[simp] theorem writeBytes_rootBuffered : ∀ (bs : List UInt8) (d : Disk α) (base : Nat),
-    (d.writeBytes base bs).rootBuffered = d.rootBuffered := by
-  intro bs; induction bs with
-  | nil => intro d base; rfl
-  | cons v vs ih => intro d base; rw [Disk.writeBytes, ih]; rfl
 @[simp] theorem flushUser_root (d : Disk α) : d.flushUser.root = d.root := rfl
-@[simp] theorem writeBytes_readRoot (bs : List UInt8) (d : Disk α) (base : Nat) :
-    (d.writeBytes base bs).readRoot = d.readRoot := by
-  unfold Disk.readRoot
-  rw [writeBytes_rootCached, writeBytes_rootBuffered, writeBytes_root]
 @[simp] theorem flushUser_stable (d : Disk α) : d.flushUser.stable = d.stable := rfl
 
 /-- A crash leaves untouched any address the kernel was never told about. -/
@@ -374,14 +337,5 @@ theorem readRegion_congr {d₁ d₂ : Disk α} {base size : Nat}
   simp only [List.getElem_map, List.getElem_range]
   exact h i (by simpa using h2)
 
-/-- A synced run of writes reads back exactly. -/
-theorem readRegion_writeBytes_sync (d : Disk α) (base : Nat) (bs : List UInt8) :
-    ((d.writeBytes base bs).sync).readRegion base bs.length = bs := by
-  unfold Disk.readRegion
-  refine List.ext_getElem (by simp) ?_
-  intro i h1 h2
-  simp only [List.getElem_map, List.getElem_range]
-  rw [sync_read]
-  exact writeBytes_read_get bs d base i (by simpa using h2)
 
 end RaftKV.Disk
