@@ -39,6 +39,8 @@ def initState (cfg : Config) : NodeState σ κ where
   nextIndex := PeerMap.empty
   matchIndex := PeerMap.empty
   kv := KVStore.empty
+  snapIndex := 0
+  snapKV := KVStore.empty
   pending := []
   leaderHint := none
 
@@ -62,16 +64,29 @@ structure Persistent (σ : Type) where
   votedFor : Option Nat
   /-- The replicated log. -/
   log : σ
+  /-- The index the snapshot covers. -/
+  snapIndex : Nat
+  /-- The state machine as of that index, as bindings. -/
+  snapPairs : List (String × String)
   deriving Repr, DecidableEq
 
 /-- The part of a node's state that must outlive a crash. -/
 def persistOf (s : NodeState σ κ) : Persistent σ :=
-  ⟨s.currentTerm, s.votedFor, s.log⟩
+  ⟨s.currentTerm, s.votedFor, s.log, s.snapIndex, KVStore.toPairs s.snapKV⟩
 
-/-- Rebuild a node from its configuration and whatever the device gave back. -/
+/--
+Rebuild a node from its configuration and whatever the device gave back.
+
+The state machine restarts from the snapshot rather than from empty, and
+`lastApplied` with it: the entries the snapshot covers may no longer be in the
+log to replay.
+-/
 def recoverNode (cfg : Config) (p : Persistent σ) : NodeState σ κ :=
   { (initState cfg : NodeState σ κ) with
-      currentTerm := p.currentTerm, votedFor := p.votedFor, log := p.log }
+      currentTerm := p.currentTerm, votedFor := p.votedFor, log := p.log,
+      snapIndex := p.snapIndex, snapKV := KVStore.ofPairs p.snapPairs,
+      kv := KVStore.ofPairs p.snapPairs,
+      lastApplied := p.snapIndex, commitIndex := p.snapIndex }
 
 def restart (s : NodeState σ κ) : NodeState σ κ := recoverNode s.cfg (persistOf s)
 

@@ -24,6 +24,21 @@ open RaftKV Protocol
 
 variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 
+/--
+**No step moves the live window.**
+
+Every handler either leaves the log alone, appends, or splices at an index the
+consistency check placed inside the window — and none of those discards a
+prefix. Compaction is the one operation that does.
+-/
+theorem step_firstIndex (s : NodeState σ κ) (ev : Event) :
+    LogStore.firstIndex (Protocol.step s ev).1.log = LogStore.firstIndex s.log := by
+  rcases step_log s ev with hl | ⟨rid, cmd, _, hl⟩ |
+    ⟨src, term, l, pi, pt, es, lc, _, hl, _, _, hfw, _, _⟩
+  · rw [hl]
+  · rw [hl, LawfulLogStore.first_append]
+  · rw [hl, appendFrom_firstIndex es s.log (pi + 1) hfw]
+
 /-- **How a step can change the logical log** — the mirror of `step_log`. -/
 theorem full_step (s : NodeState σ κ) (fl : σ) (ev : Event) :
     fullStep s fl ev = fl
@@ -162,6 +177,16 @@ structure FullBridge (w : World σ κ) : Prop where
   -/
   window : ∀ i, LogStore.firstIndex (w.nodes i).log = 1
     ∨ LogStore.firstIndex (w.nodes i).log ≤ LogStore.lastIndex (w.nodes i).log
+  /--
+  The log's window starts exactly one past the snapshot, and the snapshot never
+  covers more than has been applied.
+
+  This is what makes a restart sound in the presence of compaction: the node
+  comes back with the state machine the snapshot holds, at `snapIndex`, and
+  every entry it still has to replay is still in the log.
+  -/
+  snap : ∀ i, LogStore.firstIndex (w.nodes i).log = (w.nodes i).snapIndex + 1
+    ∧ (w.nodes i).snapIndex ≤ (w.nodes i).lastApplied
 
 theorem fullBridge_init (members : List Nat) :
     FullBridge (σ := σ) (κ := κ) (World.init members) where
@@ -169,6 +194,7 @@ theorem fullBridge_init (members : List Nat) :
   last := fun _ => rfl
   agree := fun _ _ _ => rfl
   window := fun _ => Or.inl LawfulLogStore.first_empty
+  snap := fun _ => ⟨LawfulLogStore.first_empty, Nat.le_refl _⟩
 
 theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
     (h : FullBridge w) (hs : Step members w w') : FullBridge w' := by
@@ -253,7 +279,7 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
                   (h.first j) (h.last j) (h.agree j)
               · refine hunchanged _ ?_ (by rw [fullStep, if_neg ha])
                 rw [Protocol.step, handleAppendEntries_accepts, if_neg ha]
-    refine ⟨fun i => ?_, fun i => ?_, fun i k hk => ?_, fun i => ?_⟩
+    refine ⟨fun i => ?_, fun i => ?_, fun i k hk => ?_, fun i => ?_, fun i => ?_⟩
     · by_cases hij : i = j
       · subst hij; rw [act_full_self]; exact main.1
       · rw [act_full_ne _ _ _ hij]; exact h.first i
@@ -290,13 +316,20 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
             have := LogStore.firstIndex_le_of_termAt (hchk hpos)
             omega
       · rw [act_nodes_ne _ _ _ hij]; exact h.window i
+    · by_cases hij : i = j
+      · subst hij
+        rw [act_nodes_self, step_firstIndex, step_snapIndex]
+        have hmono := step_lastApplied_mono (w.nodes i) ev
+        have := h.snap i
+        exact ⟨this.1, by omega⟩
+      · rw [act_nodes_ne _ _ _ hij]; exact h.snap i
   cases hs with
   | deliver s d m hd hmem => exact key d _ rfl
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
   | crash k hk =>
-      refine ⟨fun i => ?_, fun i => ?_, fun i k' hk' => ?_, fun i => ?_⟩
+      refine ⟨fun i => ?_, fun i => ?_, fun i k' hk' => ?_, fun i => ?_, fun i => ?_⟩
       · rw [crash_full]; exact h.first i
       · rw [crash_full]
         by_cases hij : i = k
@@ -309,6 +342,11 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
       · by_cases hij : i = k
         · subst hij; rw [crash_nodes_self, restart_log]; exact h.window i
         · rw [crash_nodes_ne _ _ hij]; exact h.window i
+      · by_cases hij : i = k
+        · subst hij
+          rw [crash_nodes_self, restart_log, restart_snapIndex, restart_lastApplied]
+          exact ⟨(h.snap i).1, Nat.le_refl _⟩
+        · rw [crash_nodes_ne _ _ hij]; exact h.snap i
 
 /-- **The bridge holds in every reachable world.** -/
 theorem fullBridge_reachable {members : List Nat} {w : World σ κ}
@@ -394,6 +432,16 @@ theorem leader_full_monotone {members : List Nat} {w w' : World σ κ}
   | heartbeat k _ => exact key k _ rfl
   | client k rid cmd _ => exact key k _ rfl
   | crash k _ => exact Or.inl rfl
+
+/-- Nothing a node still has to apply has been discarded. -/
+theorem full_applied {members : List Nat} {w : World σ κ} (h : Reachable members w) (i : Nat) :
+    LogStore.firstIndex (w.nodes i).log ≤ (w.nodes i).lastApplied + 1 := by
+  obtain ⟨h1, h2⟩ := (fullBridge_reachable h).snap i
+  omega
+
+/-- The snapshot never covers more than has been applied. -/
+theorem full_snapIndex {members : List Nat} {w : World σ κ} (h : Reachable members w) (i : Nat) :
+    (w.nodes i).snapIndex ≤ (w.nodes i).lastApplied := ((fullBridge_reachable h).snap i).2
 
 /-- The logical log has no holes: an entry at `idx` implies entries at every index below. -/
 theorem full_isSome_below {members : List Nat} {w : World σ κ} (h : Reachable members w)

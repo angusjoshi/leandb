@@ -364,14 +364,18 @@ inductive Step (members : List Nat) : World σ κ → World σ κ → Prop where
 @[simp] theorem restart_role (s : NodeState σ κ) :
     (Protocol.restart s).role = Role.follower := rfl
 @[simp] theorem restart_commitIndex (s : NodeState σ κ) :
-    (Protocol.restart s).commitIndex = 0 := rfl
+    (Protocol.restart s).commitIndex = s.snapIndex := rfl
 @[simp] theorem restart_lastApplied (s : NodeState σ κ) :
-    (Protocol.restart s).lastApplied = 0 := rfl
+    (Protocol.restart s).lastApplied = s.snapIndex := rfl
+@[simp] theorem restart_snapIndex (s : NodeState σ κ) :
+    (Protocol.restart s).snapIndex = s.snapIndex := rfl
+@[simp] theorem restart_snapKV (s : NodeState σ κ) :
+    (Protocol.restart s).snapKV = (KVStore.ofPairs (KVStore.toPairs s.snapKV) : κ) := rfl
 @[simp] theorem restart_votesGranted (s : NodeState σ κ) :
     (Protocol.restart s).votesGranted = [] := rfl
 @[simp] theorem restart_pending (s : NodeState σ κ) : (Protocol.restart s).pending = [] := rfl
 @[simp] theorem restart_kv (s : NodeState σ κ) :
-    (Protocol.restart s).kv = (KVStore.empty : κ) := rfl
+    (Protocol.restart s).kv = (KVStore.ofPairs (KVStore.toPairs s.snapKV) : κ) := rfl
 
 /-- A node's term never moves backwards across a crash either. -/
 theorem crash_term_mono (w : World σ κ) (i j : Nat) :

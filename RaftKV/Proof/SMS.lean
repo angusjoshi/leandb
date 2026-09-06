@@ -493,8 +493,14 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
       -- a restart zeroes the volatile indices, so its own claims become vacuous
       refine ⟨?_, ?_, ?_⟩
       · intro i
+        rw [crash_full]
         by_cases hik : i = k
-        · subst hik; rw [crash_nodes_self, restart_commitIndex]; omega
+        · subst hik
+          rw [crash_nodes_self, restart_commitIndex]
+          have h1 := full_snapIndex hr i
+          have h2 := appliedBound_reachable hr i
+          have h3 := h.bound i
+          omega
         · rw [crash_nodes_ne _ _ hik]; exact h.bound i
       · intro src dst t l pi pt es lc hp
         rw [crash_sent] at hp
@@ -506,12 +512,13 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
       · intro i k' e hk' hget
         rw [crash_full] at hget
         by_cases hik : i = k
-        · exfalso
-          subst hik
+        · subst hik
           rw [crash_nodes_self, restart_commitIndex] at hk'
-          have hz : k' = 0 := by omega
-          rw [hz] at hget
-          simp at hget
+          rw [crash_nodes_self, restart_currentTerm]
+          have h1 := full_snapIndex hr i
+          have h2 := appliedBound_reachable hr i
+          obtain ⟨T', hcom, hT'⟩ := h.cov i k' e (by omega) hget
+          exact ⟨T', committed_crash_mono hcom, hT'⟩
         · rw [crash_nodes_ne _ _ hik] at hk' ⊢
           obtain ⟨T', hcom, hT'⟩ := h.cov i k' e hk' hget
           exact ⟨T', committed_crash_mono hcom, hT'⟩

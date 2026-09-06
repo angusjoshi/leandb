@@ -27,6 +27,14 @@ class KVStore (κ : Type) where
   insert : κ → String → String → κ
   /-- Remove a key's binding, if any. -/
   erase : κ → String → κ
+  /--
+  Serialise the map's bindings. Log compaction forces this on the interface:
+  discarding a prefix of the log means a restart cannot replay it, so the state
+  machine at the compaction point has to be written down.
+  -/
+  toPairs : κ → List (String × String)
+  /-- Rebuild a map from serialised bindings. -/
+  ofPairs : List (String × String) → κ
 
 /--
 The refinement mapping into the abstract `Spec.KVModel`, plus its laws.
@@ -44,8 +52,11 @@ class LawfulKVStore (κ : Type) [KVStore κ] where
     toModel (KVStore.insert m k v) = (toModel m).insert k v
   model_erase : ∀ (m : κ) (k : String),
     toModel (KVStore.erase m k) = (toModel m).erase k
+  /-- Serialising and rebuilding preserves what the map means. -/
+  model_pairs : ∀ (m : κ),
+    toModel (KVStore.ofPairs (KVStore.toPairs m) : κ) = toModel m
 
-export LawfulKVStore (model_empty model_find model_insert model_erase)
+export LawfulKVStore (model_empty model_find model_insert model_erase model_pairs)
 
 namespace KVStore
 

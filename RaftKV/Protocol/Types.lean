@@ -146,6 +146,19 @@ structure NodeState (σ κ : Type) where
   matchIndex : PeerMap
   /-- The replicated state machine. -/
   kv : κ
+  /--
+  The index the durable snapshot covers. Everything at or below it has been
+  applied, and may have been compacted out of the log.
+  -/
+  snapIndex : Nat
+  /--
+  The state machine as of `snapIndex`, durable alongside the log.
+
+  Compaction discards log entries, so a restart cannot replay them; the snapshot
+  is what it starts from instead. Without it, discarding a prefix would lose the
+  effect of every command in that prefix.
+  -/
+  snapKV : κ
   /-- Client requests awaiting commit, as `(logIndex, reqId)`. Leader only. -/
   pending : List (Nat × Nat)
   /-- Last known leader, used to redirect clients. -/

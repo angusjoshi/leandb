@@ -71,6 +71,42 @@ variable {σ κ : Type} [LogStore σ] [KVStore κ]
   | zero => rfl
   | succ n ih => rw [applyLoop]; split <;> simp [ih]
 
+@[simp] theorem applyOne_lastApplied_ge (s : NodeState σ κ) :
+    s.lastApplied ≤ (applyOne s).1.lastApplied := by
+  rw [applyOne]; split
+  · exact Nat.le_refl _
+  · exact Nat.le_succ _
+
+theorem applyLoop_lastApplied_ge (f : Nat) (s : NodeState σ κ) (acc : List Action) :
+    s.lastApplied ≤ (applyLoop f s acc).1.lastApplied := by
+  induction f generalizing s acc with
+  | zero => exact Nat.le_refl _
+  | succ n ih =>
+      rw [applyLoop]
+      split
+      · exact Nat.le_trans (applyOne_lastApplied_ge s) (ih _ _)
+      · exact Nat.le_refl _
+
+theorem applyCommitted_lastApplied_ge (s : NodeState σ κ) :
+    s.lastApplied ≤ (applyCommitted s).1.lastApplied := applyLoop_lastApplied_ge _ _ _
+
+@[simp] theorem applyOne_snapIndex (s : NodeState σ κ) :
+    (applyOne s).1.snapIndex = s.snapIndex := by
+  rw [applyOne]; split <;> rfl
+
+@[simp] theorem applyLoop_snapIndex (f : Nat) (s : NodeState σ κ) (acc : List Action) :
+    (applyLoop f s acc).1.snapIndex = s.snapIndex := by
+  induction f generalizing s acc with
+  | zero => rfl
+  | succ n ih =>
+      rw [applyLoop]
+      split
+      · rw [ih]; exact applyOne_snapIndex s
+      · rfl
+
+@[simp] theorem applyCommitted_snapIndex (s : NodeState σ κ) :
+    (applyCommitted s).1.snapIndex = s.snapIndex := applyLoop_snapIndex _ _ _
+
 @[simp] theorem applyCommitted_commitIndex (s : NodeState σ κ) :
     (applyCommitted s).1.commitIndex = s.commitIndex := by
   simp [applyCommitted]

@@ -495,6 +495,110 @@ theorem appendFrom_firstIndex : ∀ (es : List Entry) (lg : σ) (startIdx : Nat)
         rw [ih _ (startIdx + 1) (by rw [LawfulLogStore.first_append]; omega),
           LawfulLogStore.first_append]
 
+/-- No handler touches the snapshot: only compaction does. -/
+theorem step_snapIndex {σ' : Type} [LogStore σ'] {κ' : Type} [KVStore κ']
+    (s : NodeState σ' κ') (ev : Event) :
+    (Protocol.step s ev).1.snapIndex = s.snapIndex := by
+  have hmsd : ∀ t v, (maybeStepDown s t v).1.snapIndex = s.snapIndex := by
+    intro t v; rw [maybeStepDown]; split <;> rfl
+  cases ev with
+  | recv src m =>
+      cases m with
+      | requestVote term candId li lt =>
+          rw [Protocol.step, handleRequestVote]
+          split
+          · rfl
+          · dsimp only; split <;> simp [hmsd]
+      | requestVoteResp term g =>
+          rw [Protocol.step, handleRequestVoteResp]
+          split
+          · rfl
+          · split
+            · rfl
+            · dsimp only; split <;> (split <;> simp [becomeLeader, stepDown])
+      | appendEntries term l pi pt es lc =>
+          rw [Protocol.step, handleAppendEntries]
+          split
+          · rfl
+          · dsimp only; split
+            · simp [hmsd]
+            · dsimp only; simp [hmsd]
+      | appendEntriesResp term ok mi =>
+          rw [Protocol.step, handleAppendEntriesResp]
+          split
+          · rfl
+          · split
+            · rfl
+            · split
+              · rw [applyCommitted_snapIndex, advanceCommit]
+                split <;> rfl
+              · rfl
+  | clientReq rid c =>
+      rw [Protocol.step, handleClientReq]
+      split
+      · rfl
+      · dsimp only
+        rw [applyCommitted_snapIndex, advanceCommit]
+        split <;> rfl
+  | electionTimeout =>
+      rw [Protocol.step]; split
+      · rfl
+      · rw [startElection]; dsimp only; split <;> simp [becomeLeader]
+  | heartbeatTimeout => rw [Protocol.step]; split <;> rfl
+
+/-- No handler ever un-applies: `lastApplied` only grows. -/
+theorem step_lastApplied_mono {σ' : Type} [LogStore σ'] {κ' : Type} [KVStore κ']
+    (s : NodeState σ' κ') (ev : Event) :
+    s.lastApplied ≤ (Protocol.step s ev).1.lastApplied := by
+  have hmsd : ∀ t v, (maybeStepDown s t v).1.lastApplied = s.lastApplied := by
+    intro t v; rw [maybeStepDown]; split <;> rfl
+  cases ev with
+  | recv src m =>
+      cases m with
+      | requestVote term candId li lt =>
+          rw [Protocol.step, handleRequestVote]
+          split
+          · exact Nat.le_refl _
+          · dsimp only; split <;> simp [hmsd]
+      | requestVoteResp term g =>
+          rw [Protocol.step, handleRequestVoteResp]
+          split
+          · rw [stepDown]; exact Nat.le_refl _
+          · split
+            · exact Nat.le_refl _
+            · dsimp only; split <;> (split <;> simp [becomeLeader])
+      | appendEntries term l pi pt es lc =>
+          rw [Protocol.step, handleAppendEntries]
+          split
+          · exact Nat.le_refl _
+          · dsimp only; split
+            · simp [hmsd]
+            · dsimp only
+              refine Nat.le_trans ?_ (applyCommitted_lastApplied_ge _)
+              simp [hmsd]
+      | appendEntriesResp term ok mi =>
+          rw [Protocol.step, handleAppendEntriesResp]
+          split
+          · rw [stepDown]; exact Nat.le_refl _
+          · split
+            · exact Nat.le_refl _
+            · split
+              · refine Nat.le_trans ?_ (applyCommitted_lastApplied_ge _)
+                rw [advanceCommit]; split <;> exact Nat.le_refl _
+              · exact Nat.le_refl _
+  | clientReq rid c =>
+      rw [Protocol.step, handleClientReq]
+      split
+      · exact Nat.le_refl _
+      · dsimp only
+        refine Nat.le_trans ?_ (applyCommitted_lastApplied_ge _)
+        rw [advanceCommit]; split <;> exact Nat.le_refl _
+  | electionTimeout =>
+      rw [Protocol.step]; split
+      · exact Nat.le_refl _
+      · rw [startElection]; dsimp only; split <;> simp [becomeLeader]
+  | heartbeatTimeout => rw [Protocol.step]; split <;> exact Nat.le_refl _
+
 /-! ## How a step can change the log -/
 
 section StepLog
@@ -662,7 +766,7 @@ theorem step_log {σ' : Type} [LogStore σ'] [LawfulLogStore σ'] {κ' : Type} [
           · rfl
           · split
             · rfl
-            · dsimp only; split <;> (split <;> simp)
+            · dsimp only; split <;> (split <;> simp [becomeLeader, stepDown])
       | appendEntries term l pi pt es lc =>
           rcases handleAppendEntries_log (s := s) (src := src) (term := term) (leaderId := l)
             (prevIdx := pi) (prevTerm := pt) (es := es) (lc := lc) with h | ⟨h1, h2, h3, hfw, h4, h5⟩

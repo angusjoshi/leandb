@@ -349,29 +349,6 @@ serialisable, which is a separate obligation from `LogStore` — a memory-mapped
 log would satisfy it by handing over the file it already is.
 -/
 
-instance {σ : Type} [ByteCodec σ] : ByteCodec (Protocol.Persistent σ) where
-  enc p := enc p.currentTerm ++ enc p.votedFor ++ enc p.log
-  dec bs :=
-    match (dec bs : Option (Nat × List UInt8)) with
-    | none => none
-    | some (t, r) =>
-        match (dec r : Option (Option Nat × List UInt8)) with
-        | none => none
-        | some (v, r') =>
-            match (dec r' : Option (σ × List UInt8)) with
-            | none => none
-            | some (lg, r'') => some (⟨t, v, lg⟩, r'')
-  dec_enc := by
-    intro p rest
-    show (match (dec ((enc p.currentTerm ++ enc p.votedFor ++ enc p.log) ++ rest) :
-        Option (Nat × List UInt8)) with | none => none | some (t, r) => _) = _
-    simp only [List.append_assoc]
-    rw [dec_enc p.currentTerm (enc p.votedFor ++ (enc p.log ++ rest))]
-    dsimp only
-    rw [dec_enc p.votedFor (enc p.log ++ rest)]
-    dsimp only
-    rw [dec_enc p.log rest]
-
 /--
 The array-backed log serialises as its base offset and the entries it still
 holds — which is the point of compaction: what was discarded is not written.
@@ -392,6 +369,40 @@ instance : ByteCodec ArrayLog where
     rw [List.append_assoc, dec_enc s.base (enc s.entries.toList ++ rest)]
     dsimp only
     rw [dec_enc s.entries.toList rest]
+
+instance {σ : Type} [ByteCodec σ] : ByteCodec (Protocol.Persistent σ) where
+  enc p := enc p.currentTerm ++ enc p.votedFor ++ enc p.log ++ enc p.snapIndex ++ enc p.snapPairs
+  dec bs :=
+    match (dec bs : Option (Nat × List UInt8)) with
+    | none => none
+    | some (t, r) =>
+        match (dec r : Option (Option Nat × List UInt8)) with
+        | none => none
+        | some (v, r') =>
+            match (dec r' : Option (σ × List UInt8)) with
+            | none => none
+            | some (lg, r'') =>
+                match (dec r'' : Option (Nat × List UInt8)) with
+                | none => none
+                | some (si, r3) =>
+                    match (dec r3 : Option (List (String × String) × List UInt8)) with
+                    | none => none
+                    | some (sk, r4) => some (⟨t, v, lg, si, sk⟩, r4)
+  dec_enc := by
+    intro p rest
+    show (match (dec ((enc p.currentTerm ++ enc p.votedFor ++ enc p.log ++ enc p.snapIndex
+        ++ enc p.snapPairs) ++ rest) : Option (Nat × List UInt8)) with
+      | none => none | some (t, r) => _) = _
+    simp only [List.append_assoc]
+    rw [dec_enc p.currentTerm _]
+    dsimp only
+    rw [dec_enc p.votedFor _]
+    dsimp only
+    rw [dec_enc p.log _]
+    dsimp only
+    rw [dec_enc p.snapIndex _]
+    dsimp only
+    rw [dec_enc p.snapPairs rest]
 
 end ByteCodec
 
