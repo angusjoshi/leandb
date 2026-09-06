@@ -25,11 +25,11 @@ variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 
 theorem act_elected (w : World σ κ) (j : Nat) (ev : Event) :
     (w.act j ev).elected
-      = w.elected ++ electedOf j (w.nodes j) (Protocol.step (w.nodes j) ev).1 := rfl
+      = w.elected ++ electedOf j (w.nodes j) (Protocol.step (w.nodes j) ev).1 (fullStep (w.nodes j) (w.full j) ev) := rfl
 
-theorem mem_electedOf {i j t : Nat} {lg : σ} {pre post : NodeState σ κ}
-    (h : (i, t, lg) ∈ electedOf j pre post) :
-    i = j ∧ t = post.currentTerm ∧ lg = post.log
+theorem mem_electedOf {i j t : Nat} {lg : σ} {pre post : NodeState σ κ} {fl : σ}
+    (h : (i, t, lg) ∈ electedOf j pre post fl) :
+    i = j ∧ t = post.currentTerm ∧ lg = fl
       ∧ post.role = Role.leader ∧ pre.role ≠ Role.leader := by
   unfold electedOf at h
   split at h
@@ -50,7 +50,12 @@ def ElectedLed (w : World σ κ) : Prop :=
 def ElectedPrefix (w : World σ κ) : Prop :=
   ∀ i t lg, (i, t, lg) ∈ w.elected → (w.nodes i).currentTerm = t →
     ∀ k, k ≤ LogStore.lastIndex lg →
-      LogStore.get (w.nodes i).log k = LogStore.get lg k
+      LogStore.get (w.full i) k = LogStore.get lg k
+
+/-- And the current log reaches at least as far as the record. -/
+def ElectedReach (w : World σ κ) : Prop :=
+  ∀ i t lg, (i, t, lg) ∈ w.elected → (w.nodes i).currentTerm = t →
+    LogStore.lastIndex lg ≤ LogStore.lastIndex (w.full i)
 
 /-- The election-record invariants. -/
 structure EInv (members : List Nat) (w : World σ κ) : Prop where
@@ -58,11 +63,14 @@ structure EInv (members : List Nat) (w : World σ κ) : Prop where
   led : ElectedLed w
   /-- Records are prefixes of the current log. -/
   prefixed : ElectedPrefix w
+  /-- The current log reaches at least as far. -/
+  reaches : ElectedReach w
 
 theorem eInv_init (members : List Nat) :
     EInv (σ := σ) (κ := κ) members (World.init members) where
   led := by intro i t lg h; simp [World.init] at h
   prefixed := by intro i t lg h; simp [World.init] at h
+  reaches := by intro i t lg h; simp [World.init] at h
 
 /-- **The election-record invariants are preserved by every step.** -/
 theorem eInv_step {members : List Nat} {w w' : World σ κ}
@@ -88,7 +96,7 @@ theorem eInv_step {members : List Nat} {w w' : World σ κ}
       rcases List.mem_append.mp hmem with h' | h'
       · by_cases hij : i = j
         · subst hij
-          rw [act_nodes_self] at hterm ⊢
+          rw [act_nodes_self] at hterm
           -- the leader still holds its term, so it is still in office and only appended
           have hled : (i, t) ∈ w.led := h.led i t lg h'
           have hb := hl.bound i t hled
@@ -96,26 +104,48 @@ theorem eInv_step {members : List Nat} {w w' : World σ κ}
           rw [act_nodes_self] at hmono
           have hold : (w.nodes i).currentTerm = t := by omega
           have hpre := h.prefixed i t lg h' hold
-          rcases led_log_stable hnd hr hs hled hold (by rw [act_nodes_self]; exact hterm)
+          rcases led_full_stable hnd hr hs hled hold (by rw [act_nodes_self]; exact hterm)
             with hlog | ⟨e', hlog⟩
-          · rw [act_nodes_self] at hlog; rw [hlog]; exact hpre k hk
-          · rw [act_nodes_self] at hlog
-            rw [hlog, LogStore.get_append, if_neg ?_]
+          · rw [act_full_self] at hlog; rw [act_full_self, hlog]; exact hpre k hk
+          · rw [act_full_self] at hlog
+            rw [act_full_self, hlog, LogStore.get_append, if_neg ?_]
             · exact hpre k hk
             · -- `k` is within the old log, so it is not the freshly appended slot
               rcases Nat.eq_zero_or_pos k with hk0 | hk0
               · omega
-              · have hsome : (LogStore.get lg k).isSome :=
-                  (LogStore.get_isSome_iff lg k).mpr ⟨hk0, hk⟩
-                have : (LogStore.get (w.nodes i).log k).isSome := by
-                  rw [hpre k hk]; exact hsome
-                have := ((LogStore.get_isSome_iff (w.nodes i).log k).mp this).2
+              · have hreach := h.reaches i t lg h' hold
                 omega
-        · rw [act_nodes_ne _ _ _ hij] at hterm ⊢
+        · rw [act_nodes_ne _ _ _ hij] at hterm
+          rw [act_full_ne _ _ _ hij]
           exact h.prefixed i t lg h' hterm k hk
       · obtain ⟨h1, h2, h3, h4, _⟩ := mem_electedOf h'
         subst h1; subst h3
-        rw [act_nodes_self]
+        rw [act_full_self]
+    · -- the logical log reaches at least as far as the record
+      intro i t lg hmem hterm
+      rw [act_elected] at hmem
+      rcases List.mem_append.mp hmem with h' | h'
+      · by_cases hij : i = j
+        · subst hij
+          rw [act_nodes_self] at hterm
+          have hled : (i, t) ∈ w.led := h.led i t lg h'
+          have hb := hl.bound i t hled
+          have hmono := act_term_mono w i ev i
+          rw [act_nodes_self] at hmono
+          have hold : (w.nodes i).currentTerm = t := by omega
+          have hreach := h.reaches i t lg h' hold
+          rcases led_full_stable hnd hr hs hled hold (by rw [act_nodes_self]; exact hterm)
+            with hlog | ⟨e', hlog⟩
+          · rw [act_full_self] at hlog; rw [act_full_self, hlog]; exact hreach
+          · rw [act_full_self] at hlog
+            rw [act_full_self, hlog, LogStore.lastIndex_append]; omega
+        · rw [act_nodes_ne _ _ _ hij] at hterm
+          rw [act_full_ne _ _ _ hij]
+          exact h.reaches i t lg h' hterm
+      · obtain ⟨h1, h2, h3, h4, _⟩ := mem_electedOf h'
+        subst h1; subst h3
+        rw [act_full_self]
+        exact Nat.le_refl _
   cases hs with
   | deliver s d m hd hm => exact key d _ rfl
   | electionTimeout k hk => exact key k _ rfl
@@ -123,16 +153,24 @@ theorem eInv_step {members : List Nat} {w w' : World σ κ}
   | client k rid cmd hk => exact key k _ rfl
   | crash k hk =>
       -- the election record is a ghost and the log it names is durable
-      refine ⟨?_, ?_⟩
+      refine ⟨?_, ?_, ?_⟩
       · intro i t lg hm; rw [crash_elected] at hm; rw [crash_led]; exact h.led i t lg hm
       · intro i t lg hm hterm k' hk'
         rw [crash_elected] at hm
+        rw [crash_full]
         by_cases hij : i = k
         · subst hij
-          rw [crash_nodes_self, restart_log]
           rw [crash_nodes_self, restart_currentTerm] at hterm
           exact h.prefixed i t lg hm hterm k' hk'
-        · rw [crash_nodes_ne _ _ hij] at hterm ⊢; exact h.prefixed i t lg hm hterm k' hk'
+        · rw [crash_nodes_ne _ _ hij] at hterm; exact h.prefixed i t lg hm hterm k' hk'
+      · intro i t lg hm hterm
+        rw [crash_elected] at hm
+        rw [crash_full]
+        by_cases hij : i = k
+        · subst hij
+          rw [crash_nodes_self, restart_currentTerm] at hterm
+          exact h.reaches i t lg hm hterm
+        · rw [crash_nodes_ne _ _ hij] at hterm; exact h.reaches i t lg hm hterm
 
 /-- The election-record invariants hold in every reachable world. -/
 theorem eInv_reachable {members : List Nat} {w : World σ κ}

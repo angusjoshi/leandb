@@ -72,7 +72,7 @@ theorem candidate_log_stable {s : NodeState σ κ} {ev : Event}
     (h : (Protocol.step s ev).1.role = Role.candidate) :
     (Protocol.step s ev).1.log = s.log := by
   rcases step_log s ev with hl | ⟨rid, cmd, hev, hl⟩ |
-    ⟨src, term, l, pi, pt, es, lc, hev, hl, _, _, hrole, _⟩
+    ⟨src, term, l, pi, pt, es, lc, hev, hl, _, _, _, hrole, _⟩
   · exact hl
   · exfalso
     subst hev
@@ -140,7 +140,7 @@ theorem leader_log_unchanged {s : NodeState σ κ} {ev : Event}
     (hpost : (Protocol.step s ev).1.role = Role.leader) (hpre : s.role ≠ Role.leader) :
     (Protocol.step s ev).1.log = s.log := by
   rcases step_log s ev with hl | ⟨rid, cmd, hev, hl⟩ |
-    ⟨src, term, l, pi, pt, es, lc, hev, hl, _, _, hrole, _⟩
+    ⟨src, term, l, pi, pt, es, lc, hev, hl, _, _, _, hrole, _⟩
   · exact hl
   · exfalso
     subst hev
@@ -153,6 +153,21 @@ theorem leader_log_unchanged {s : NodeState σ κ} {ev : Event}
       simp only [LogStore.lastIndex_append] at this
       omega
   · exfalso; rw [hrole] at hpost; exact Role.noConfusion hpost
+
+/-- The same for the logical log: becoming leader touches neither. -/
+theorem leader_full_unchanged {s : NodeState σ κ} {fl : σ} {ev : Event}
+    (hpost : (Protocol.step s ev).1.role = Role.leader) (hpre : s.role ≠ Role.leader) :
+    fullStep s fl ev = fl := by
+  rcases full_step s fl ev with hl | ⟨rid, cmd, hev, hlead, hl⟩ |
+    ⟨src, term, l, pi, pt, es, lc, hev, ha, hl⟩
+  · exact hl
+  · exact absurd hlead hpre
+  · exfalso
+    subst hev
+    have hct := aeAccepts_term ha
+    rw [Protocol.step, handleAppendEntries, if_neg (by omega)] at hpost
+    dsimp only at hpost
+    split at hpost <;> simp at hpost
 
 /-! ## The advertised log is the real one -/
 
@@ -306,8 +321,8 @@ theorem rvElected_step {members : List Nat} {w w' : World σ κ}
       have hcand : (w.nodes c).role = Role.candidate :=
         leader_from_candidate h4 h5 hpre.symm
       obtain ⟨e1, e2⟩ := hc.log c d _ cid li lt hp' hpre hcand
-      rw [leader_log_unchanged h4 h5]
-      exact ⟨e1, e2⟩
+      rw [leader_full_unchanged h4 h5]
+      exact ⟨by rw [e1, full_lastIndex hr c], by rw [e2, full_lastTerm hr c]⟩
     · -- a fresh advertisement cannot meet an older election record for the same term
       exfalso
       rcases mem_sendsOf hp' with ⟨to, m, heq, hact⟩

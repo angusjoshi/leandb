@@ -141,12 +141,20 @@ structure FullBridge (w : World σ κ) : Prop where
   /-- And agrees wherever the real one can still be asked. -/
   agree : ∀ i k, LogStore.firstIndex (w.nodes i).log ≤ k →
     LogStore.get (w.nodes i).log k = LogStore.get (w.full i) k
+  /--
+  The window is sane: either nothing has been discarded, or the window is
+  non-empty. A node never compacts past its own end, and the consistency check
+  never lets a splice truncate into the discarded region.
+  -/
+  window : ∀ i, LogStore.firstIndex (w.nodes i).log = 1
+    ∨ LogStore.firstIndex (w.nodes i).log ≤ LogStore.lastIndex (w.nodes i).log
 
 theorem fullBridge_init (members : List Nat) :
     FullBridge (σ := σ) (κ := κ) (World.init members) where
   first := fun _ => LawfulLogStore.first_empty
   last := fun _ => rfl
   agree := fun _ _ _ => rfl
+  window := fun _ => Or.inl LawfulLogStore.first_empty
 
 theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
     (h : FullBridge w) (hs : Step members w w') : FullBridge w' := by
@@ -231,7 +239,7 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
                   (h.first j) (h.last j) (h.agree j)
               · refine hunchanged _ ?_ (by rw [fullStep, if_neg ha])
                 rw [Protocol.step, handleAppendEntries_accepts, if_neg ha]
-    refine ⟨fun i => ?_, fun i => ?_, fun i k hk => ?_⟩
+    refine ⟨fun i => ?_, fun i => ?_, fun i k hk => ?_, fun i => ?_⟩
     · by_cases hij : i = j
       · subst hij; rw [act_full_self]; exact main.1
       · rw [act_full_ne _ _ _ hij]; exact h.first i
@@ -246,13 +254,35 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
       · rw [act_nodes_ne _ _ _ hij] at hk
         rw [act_full_ne _ _ _ hij, act_nodes_ne _ _ _ hij]
         exact h.agree i k hk
+    · by_cases hij : i = j
+      · subst hij
+        rw [act_nodes_self]
+        rcases step_log (w.nodes i) ev with hn | ⟨rid, cmd, _, hn⟩ |
+          ⟨src, term, l, pi, pt, es, lc, hev, hn, hpi, hchk, hfw, _, _⟩
+        · rw [hn]; exact h.window i
+        · rw [hn, LawfulLogStore.first_append, LogStore.lastIndex_append]
+          rcases h.window i with hc | hc
+          · exact Or.inl hc
+          · exact Or.inr (by omega)
+        · rw [hn, appendFrom_firstIndex es (w.nodes i).log (pi + 1) hfw]
+          have hge := appendFrom_lastIndex_ge es (w.nodes i).log (pi + 1) (by omega)
+          rcases Classical.em (LogStore.firstIndex (w.nodes i).log = 1) with hc | hc
+          · exact Or.inl hc
+          · refine Or.inr ?_
+            have hpos : pi ≠ 0 := by
+              intro hz
+              subst hz
+              exact hc (Nat.le_antisymm hfw (LawfulLogStore.first_pos _))
+            have := LogStore.firstIndex_le_of_termAt (hchk hpos)
+            omega
+      · rw [act_nodes_ne _ _ _ hij]; exact h.window i
   cases hs with
   | deliver s d m hd hmem => exact key d _ rfl
   | electionTimeout k hk => exact key k _ rfl
   | heartbeat k hk => exact key k _ rfl
   | client k rid cmd hk => exact key k _ rfl
   | crash k hk =>
-      refine ⟨fun i => ?_, fun i => ?_, fun i k' hk' => ?_⟩
+      refine ⟨fun i => ?_, fun i => ?_, fun i k' hk' => ?_, fun i => ?_⟩
       · rw [crash_full]; exact h.first i
       · rw [crash_full]
         by_cases hij : i = k
@@ -262,6 +292,9 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
         by_cases hij : i = k
         · subst hij; rw [crash_nodes_self, restart_log] at hk' ⊢; exact h.agree i k' hk'
         · rw [crash_nodes_ne _ _ hij] at hk' ⊢; exact h.agree i k' hk'
+      · by_cases hij : i = k
+        · subst hij; rw [crash_nodes_self, restart_log]; exact h.window i
+        · rw [crash_nodes_ne _ _ hij]; exact h.window i
 
 /-- **The bridge holds in every reachable world.** -/
 theorem fullBridge_reachable {members : List Nat} {w : World σ κ}
@@ -290,6 +323,25 @@ theorem full_termAt {members : List Nat} {w : World σ κ} (h : Reachable member
   cases hq : LogStore.get (w.nodes i).log k with
   | none => rw [hq] at hg; exact absurd hg (by simp)
   | some e => rw [← full_get h (LogStore.firstIndex_le_of_get hq), hq]; rw [hq] at hg; exact hg
+
+/-- The last term is the same in both logs. -/
+theorem full_lastTerm {members : List Nat} {w : World σ κ} (h : Reachable members w) (i : Nat) :
+    LogStore.lastTerm (w.full i) = LogStore.lastTerm (w.nodes i).log := by
+  have hb := fullBridge_reachable h
+  unfold LogStore.lastTerm LogStore.termAt LogStore.lastIndex
+  have hlast : LogStore.size (w.full i) = LogStore.size (w.nodes i).log := hb.last i
+  rw [← hlast]
+  rcases Nat.eq_zero_or_pos (LogStore.size (w.full i)) with hz | hz
+  · rw [hz]
+    have h0 : LogStore.get (w.nodes i).log 0 = none := LogStore.get_zero _
+    rw [h0]
+    have h1 : LogStore.get (w.full i) 0 = none := LogStore.get_zero _
+    rw [h1]
+  · have hfi : LogStore.firstIndex (w.nodes i).log ≤ LogStore.size (w.full i) := by
+      rcases hb.window i with hc | hc
+      · rw [hc]; omega
+      · simp only [LogStore.lastIndex] at hc; omega
+    rw [hb.agree i _ hfi]
 
 /-- The two logs reach exactly as far as each other. -/
 theorem full_lastIndex {members : List Nat} {w : World σ κ} (h : Reachable members w) (i : Nat) :

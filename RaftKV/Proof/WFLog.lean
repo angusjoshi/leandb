@@ -22,6 +22,8 @@ variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 
 /-- A log whose entries are all accounted for in the ghost records. -/
 structure WellFormedLog (w : World σ κ) (lg : σ) : Prop where
+  /-- The log has discarded nothing: every recorded log is a logical one. -/
+  nocompact : LogStore.firstIndex lg = 1
   /-- Every entry was minted at this index. -/
   created : ∀ k e, LogStore.get lg k = some e → ∃ c, (c, k, e) ∈ w.created
   /-- Every entry beyond the first carries its predecessor link. -/
@@ -31,7 +33,8 @@ structure WellFormedLog (w : World σ κ) (lg : σ) : Prop where
 /-- Replicas' own logs are well formed. -/
 theorem wf_node {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (hrch : Reachable members w) (i : Nat) :
-    WellFormedLog w (w.nodes i).log where
+    WellFormedLog w (w.full i) where
+  nocompact := full_firstIndex hrch i
   created := fun k e h => (bInv_reachable hrch).logs i k e h
   chained := fun k e h hk => (chInv_reachable hnd hrch).logs i k e h hk
 
@@ -103,7 +106,7 @@ theorem wf_agree_below {members : List Nat} {w : World σ κ}
           cases hq : LogStore.get lg₁ (idx - 1) with
           | none =>
               exfalso
-              have := get_isSome_below g₁ (m := idx - 1) (by omega) (by omega)
+              have := get_isSome_below g₁ (m := idx - 1) (by rw [h₁.nocompact]; omega) (by omega)
               rw [hq] at this; exact Bool.noConfusion this
           | some v => exact ⟨v, rfl⟩
         exact ih (idx - 1) v (by omega) hv (by rw [← hpred]; exact hv) k (by omega)

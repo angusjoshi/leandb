@@ -21,6 +21,7 @@ variable {σ κ : Type} [LogStore σ] [LawfulLogStore σ] [KVStore κ]
 /-- Well-formedness survives a step, since `created` and `chain` only grow. -/
 theorem WellFormedLog.mono {w : World σ κ} {j : Nat} {ev : Event} {lg : σ}
     (h : WellFormedLog w lg) : WellFormedLog (w.act j ev) lg where
+  nocompact := h.nocompact
   created := fun k e hk => by
     obtain ⟨c, hc⟩ := h.created k e hk; exact ⟨c, created_mono hc⟩
   chained := fun k e hk h2 => by
@@ -29,6 +30,7 @@ theorem WellFormedLog.mono {w : World σ κ} {j : Nat} {ev : Event} {lg : σ}
 /-- A crash moves no ghost list, so well-formedness is untouched. -/
 theorem WellFormedLog.crashMono {w : World σ κ} {i : Nat} {lg : σ}
     (h : WellFormedLog w lg) : WellFormedLog (w.crash i) lg where
+  nocompact := h.nocompact
   created := fun k e hk => by
     obtain ⟨c, hc⟩ := h.created k e hk; exact ⟨c, by rw [crash_created]; exact hc⟩
   chained := fun k e hk h2 => by
@@ -41,9 +43,9 @@ def SnapWF (w : World σ κ) : Prop :=
     ∧ (∀ p T m lg, (p, T, m, lg) ∈ w.acks → WellFormedLog w lg)
     ∧ (∀ i T lg, (i, T, lg) ∈ w.elected → WellFormedLog w lg)
 
-theorem mem_commitOf {i L T c : Nat} {lg : σ} {Q : List Nat} {pre post : NodeState σ κ}
-    (h : (L, T, c, lg, Q) ∈ commitOf i pre post) :
-    L = i ∧ T = post.currentTerm ∧ c = post.commitIndex ∧ lg = post.log
+theorem mem_commitOf {i L T c : Nat} {lg fl : σ} {Q : List Nat} {pre post : NodeState σ κ}
+    (h : (L, T, c, lg, Q) ∈ commitOf i pre post fl) :
+    L = i ∧ T = post.currentTerm ∧ c = post.commitIndex ∧ lg = fl
       ∧ Q = replicatedOn post post.commitIndex
       ∧ post.role = Role.leader ∧ pre.commitIndex < post.commitIndex := by
   unfold commitOf at h
@@ -54,25 +56,25 @@ theorem mem_commitOf {i L T c : Nat} {lg : σ} {Q : List Nat} {pre post : NodeSt
   · simp at h
 
 /-- A leader's own standing acknowledgement of its whole log. -/
-theorem ackOf_self {i : Nat} {s : NodeState σ κ} {acts : List Action}
+theorem ackOf_self {i : Nat} {s : NodeState σ κ} {fl : σ} {acts : List Action}
     (h : s.role = Role.leader) :
-    (i, s.currentTerm, LogStore.lastIndex s.log, s.log) ∈ ackOf i s acts := by
+    (i, s.currentTerm, LogStore.lastIndex fl, fl) ∈ ackOf i s fl acts := by
   rw [ackOf]
   exact List.mem_append_right _ (by rw [if_pos h]; simp)
 
 /-- The commit record a leader lays down when its commit index moves. -/
-theorem mem_commitOf_self {i : Nat} {pre post : NodeState σ κ}
+theorem mem_commitOf_self {i : Nat} {pre post : NodeState σ κ} {fl : σ}
     (hlead : post.role = Role.leader) (hadv : pre.commitIndex < post.commitIndex) :
-    (i, post.currentTerm, post.commitIndex, post.log, replicatedOn post post.commitIndex)
-      ∈ commitOf i pre post := by
+    (i, post.currentTerm, post.commitIndex, fl, replicatedOn post post.commitIndex)
+      ∈ commitOf i pre post fl := by
   rw [commitOf, if_pos ⟨hlead, hadv⟩]; simp
 
 /-- The two ways an acknowledgement record arises: a positive reply, or a leader's own log. -/
-theorem mem_ackOf_cases {i p T m : Nat} {lg : σ} {s : NodeState σ κ} {acts : List Action}
-    (h : (p, T, m, lg) ∈ ackOf i s acts) :
-    (∃ to, Action.send to (Msg.appendEntriesResp T true m) ∈ acts ∧ p = i ∧ lg = s.log)
+theorem mem_ackOf_cases {i p T m : Nat} {lg fl : σ} {s : NodeState σ κ} {acts : List Action}
+    (h : (p, T, m, lg) ∈ ackOf i s fl acts) :
+    (∃ to, Action.send to (Msg.appendEntriesResp T true m) ∈ acts ∧ p = i ∧ lg = fl)
       ∨ (s.role = Role.leader ∧ p = i ∧ T = s.currentTerm
-          ∧ m = LogStore.lastIndex s.log ∧ lg = s.log) := by
+          ∧ m = LogStore.lastIndex fl ∧ lg = fl) := by
   rw [ackOf] at h
   rcases List.mem_append.mp h with h | h
   · left
@@ -99,8 +101,8 @@ theorem mem_ackOf_cases {i p T m : Nat} {lg : σ} {s : NodeState σ κ} {acts : 
       exact ⟨hlead, h.1, h.2.1, h.2.2.1, h.2.2.2⟩
     · simp at h
 
-theorem mem_ackOf {i p T m : Nat} {lg : σ} {s : NodeState σ κ} {acts : List Action}
-    (h : (p, T, m, lg) ∈ ackOf i s acts) : p = i ∧ lg = s.log := by
+theorem mem_ackOf {i p T m : Nat} {lg fl : σ} {s : NodeState σ κ} {acts : List Action}
+    (h : (p, T, m, lg) ∈ ackOf i s fl acts) : p = i ∧ lg = fl := by
   rcases mem_ackOf_cases h with ⟨_, _, h1, h2⟩ | ⟨_, h1, _, _, h2⟩
   · exact ⟨h1, h2⟩
   · exact ⟨h1, h2⟩
@@ -119,26 +121,26 @@ theorem snapWF_step {members : List Nat} {w w' : World σ κ}
   have key : ∀ (j : Nat) (ev : Event), w' = w.act j ev → SnapWF w' := by
     intro j ev hw
     subst hw
-    have hpost : WellFormedLog (w.act j ev) ((w.act j ev).nodes j).log :=
+    have hpost : WellFormedLog (w.act j ev) ((w.act j ev).full j) :=
       wf_node hnd hr' j
     refine ⟨?_, ?_, ?_⟩
     · intro L T c lg Q hmem
       rcases List.mem_append.mp hmem with h' | h'
       · exact (h.1 L T c lg Q h').mono
       · obtain ⟨_, _, _, h4, _, _, _⟩ := mem_commitOf h'
-        have hq : ((w.act j ev).nodes j).log = lg := by rw [act_nodes_self]; exact h4.symm
+        have hq : ((w.act j ev).full j) = lg := by rw [act_full_self]; exact h4.symm
         rw [← hq]; exact hpost
     · intro p T m lg hmem
       rcases List.mem_append.mp hmem with h' | h'
       · exact (h.2.1 p T m lg h').mono
       · obtain ⟨_, h2⟩ := mem_ackOf h'
-        have hq : ((w.act j ev).nodes j).log = lg := by rw [act_nodes_self]; exact h2.symm
+        have hq : ((w.act j ev).full j) = lg := by rw [act_full_self]; exact h2.symm
         rw [← hq]; exact hpost
     · intro i T lg hmem
       rcases List.mem_append.mp hmem with h' | h'
       · exact (h.2.2 i T lg h').mono
       · obtain ⟨_, _, h3, _, _⟩ := mem_electedOf h'
-        have hq : ((w.act j ev).nodes j).log = lg := by rw [act_nodes_self]; exact h3.symm
+        have hq : ((w.act j ev).full j) = lg := by rw [act_full_self]; exact h3.symm
         rw [← hq]; exact hpost
   cases hs with
   | deliver s d m hd hm => exact key d _ rfl
@@ -183,7 +185,7 @@ theorem ackRecorded_step {members : List Nat} {w w' : World σ κ}
       have hm : msg = Msg.appendEntriesResp T true m := by
         have := congrArg (fun q => q.2.2) heq; simpa using this.symm
       subst hm; subst hpj
-      refine ⟨(Protocol.step (w.nodes p) ev).1.log, List.mem_append_right _ ?_⟩
+      refine ⟨fullStep (w.nodes p) (w.full p) ev, List.mem_append_right _ ?_⟩
       unfold ackOf
       exact List.mem_append_left _
         (List.mem_filterMap.mpr ⟨Action.send to (Msg.appendEntriesResp T true m), hact, rfl⟩)
@@ -741,11 +743,15 @@ theorem commitQuorum_step {members : List Nat} {w w' : World σ κ}
             cases hq : LogStore.get (Protocol.step (w.nodes L) ev).1.log c with
             | none => rw [hq] at hct; simp at hct
             | some z => exact ((LogStore.get_isSome_iff _ c).mp (by rw [hq]; rfl)).2
-          refine ⟨LogStore.lastIndex (Protocol.step (w.nodes L) ev).1.log,
-            (Protocol.step (w.nodes L) ev).1.log, ?_, hcl⟩
-          have hself := ackOf_self (i := L) (acts := (Protocol.step (w.nodes L) ev).2) e6
-          rw [← e2] at hself
-          exact List.mem_append_right _ hself
+          refine ⟨LogStore.lastIndex (fullStep (w.nodes L) (w.full L) ev),
+            fullStep (w.nodes L) (w.full L) ev, ?_, ?_⟩
+          · have hself := ackOf_self (i := L) (fl := fullStep (w.nodes L) (w.full L) ev)
+              (acts := (Protocol.step (w.nodes L) ev).2) e6
+            rw [← e2] at hself
+            exact List.mem_append_right _ hself
+          · have := full_lastIndex hr' (i := L)
+            rw [act_full_self, act_nodes_self] at this
+            omega
         · have hge : PeerMap.get ((w.act L ev).nodes L).matchIndex p 0 ≥ c := by
             simpa using (List.mem_filter.mp hp).2
           have hc1 : 1 ≤ c := by omega

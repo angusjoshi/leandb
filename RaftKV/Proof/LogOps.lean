@@ -463,6 +463,38 @@ theorem aeAccepts_facts {κ' : Type} [KVStore κ'] {s : NodeState σ κ'}
     exact ⟨LogStore.le_lastIndex_of_get he, fun _ => ht,
       Nat.le_trans (LogStore.firstIndex_le_of_get he) (Nat.le_succ _)⟩
 
+/--
+**Splicing never moves the live window**, provided it starts inside it.
+
+The truncation inside `appendFrom` cuts at or above `firstIndex`, so it removes
+a suffix and leaves the window's start where it was.
+-/
+theorem appendFrom_firstIndex : ∀ (es : List Entry) (lg : σ) (startIdx : Nat),
+    LogStore.firstIndex lg ≤ startIdx →
+    LogStore.firstIndex (appendFrom lg startIdx es) = LogStore.firstIndex lg := by
+  intro es
+  induction es with
+  | nil => intro lg startIdx _; rfl
+  | cons e es ih =>
+    intro lg startIdx hf
+    have hpos := LawfulLogStore.first_pos lg
+    rw [appendFrom]
+    cases hg : LogStore.get lg startIdx with
+    | some existing =>
+        dsimp only
+        by_cases hterm : existing.term == e.term
+        · rw [if_pos hterm]; exact ih lg (startIdx + 1) (by omega)
+        · rw [if_neg hterm]
+          have hft : LogStore.firstIndex (LogStore.truncFrom lg startIdx)
+              = LogStore.firstIndex lg := by
+            rw [LawfulLogStore.first_truncFrom]; omega
+          rw [ih _ (startIdx + 1) (by rw [LawfulLogStore.first_append, hft]; omega),
+            LawfulLogStore.first_append, hft]
+    | none =>
+        dsimp only
+        rw [ih _ (startIdx + 1) (by rw [LawfulLogStore.first_append]; omega),
+          LawfulLogStore.first_append]
+
 /-! ## How a step can change the log -/
 
 section StepLog
