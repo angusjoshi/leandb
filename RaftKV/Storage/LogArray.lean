@@ -18,7 +18,7 @@ namespace RaftKV
 structure ArrayLog where
   /-- The entries, in log order. -/
   entries : Array Entry
-  deriving Inhabited, Repr
+  deriving Inhabited, Repr, DecidableEq
 
 namespace ArrayLog
 

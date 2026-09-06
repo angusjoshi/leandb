@@ -11,6 +11,10 @@ backed by a Raft-replicated log. The protocol core is a pure function, and
 | Leader Completeness | `Proof.leaderCompleteness` |
 | State Machine Safety | `Proof.stateMachineSafety` |
 
+…and they hold in a model that includes **node crashes**: `Step` has a `crash`
+rule under which the durable trio (`currentTerm`, `votedFor`, the log) survives
+and everything else is rebuilt.
+
 On top of those, **the store is proved linearizable** — one theorem, saying the
 whole thing:
 
@@ -39,17 +43,37 @@ would have given at that point in `L`; that order never contradicts real time;
 and every replica has executed a prefix of it.** The only assumption beyond
 reachability is that clients use distinct request ids.
 
+### Storage, on a device that tears writes
+
+The implementation that justifies the crash rule is proved too. The device model
+keeps, alongside the durable bytes, everything written since the last flush; a
+crash reveals **independently at each address** either the old byte or any value
+written there since — tearing at byte granularity, and writes landing out of
+order. The one thing that cannot tear is a single root cell, which is the
+hardware's aligned-sector guarantee and the only storage assumption.
+
+On that device, one discipline is proved crash-safe — *write where the live root
+cannot see it; flush; swap the root; flush* — by `Disk.Format.commit_crash_safe`:
+crash at **any** point of a commit and the store holds either the old value or
+the new one, never a mixture. `Disk.crash_recovers_node` bridges it to the model:
+what the device gives back always rebuilds to one of the two node states
+`World.crash` permits.
+
+The encoding round-trips all the way down (`ByteCodec`), including strings —
+via code points rather than UTF-8, since Lean's core proves no round-trip for
+`String.fromUTF8?` and using it would have added a trusted law.
+
 Everything is `sorry`-free on Lean's three standard axioms. See
 **[PROOFS.md](PROOFS.md)** for the full inventory, the trusted base, and what is
-deliberately *not* proved (liveness, exactly-once client retries, crash
-recovery).
+deliberately *not* proved (liveness, exactly-once client retries, `fsync`).
 
 ## Run a 3-node cluster
 
 ```bash
 lake build
-for i in 0 1 2; do ./.lake/build/bin/raftkv $i 3 9000 & done
+for i in 0 1 2; do ./.lake/build/bin/raftkv $i 3 9000 ./data & done
 # raft ports 9000+id, http ports 9100+id
+# the last argument is a data directory; omit it to run without persistence
 
 curl -s localhost:9100/status
 curl -s -X PUT --data-binary 'hello raft' localhost:9100/kv/greeting
@@ -58,7 +82,9 @@ curl -s -X DELETE localhost:9100/kv/greeting
 curl -s localhost:9101/kv/greeting          # -> 503, "not leader; try node 0"
 ```
 
-Kill the leader and the cluster elects a new one, retaining committed data.
+Kill the leader and the cluster elects a new one, retaining committed data. Kill
+*every* node and restart them: with a data directory they recover their term,
+their vote and their log from disk, and committed keys read back.
 
 ## Design
 
@@ -112,8 +138,14 @@ RaftKV/
                          log matching, change attribution, leader completeness,
                          state machine safety, state-machine refinement,
                          linearizability
+  Storage/
+    Disk.lean            the device: torn writes, delayed durability, one atomic cell
+    Persist.lean         copy-on-write commit, proved crash-safe
+    Bytes.lean           ByteCodec, round-trip proved down to String
+    NodePersist.lean     the bridge from the store to the model's crash rule
   Runtime/
     Sim.lean             deterministic in-process cluster simulator
+    Store.lean           the durable store on a real filesystem (trusted)
     Server.lean          the I/O shim (trusted)
 ```
 

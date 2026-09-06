@@ -1,4 +1,5 @@
 import RaftKV.Protocol.Node
+import RaftKV.Runtime.Store
 import RaftKV.Protocol.Frame
 import RaftKV.Storage.LogArray
 import RaftKV.Storage.KVHash
@@ -49,6 +50,8 @@ structure Node where
   nextReq : IO.Ref Nat
   /-- Set when a leader has been heard from since the last election check. -/
   heard : IO.Ref Bool
+  /-- Where the durable trio lives, if this replica persists at all. -/
+  store : Option Store.Paths
 
 /-- Hand an outcome to whoever is waiting on `rid`, if anyone still is. -/
 def Node.resolve (nd : Node) (rid : Nat) (o : Outcome) : Async Unit := do
@@ -75,13 +78,27 @@ def Node.exec (nd : Node) : Action → Async Unit
       | _, none => IO.eprintln s!"[{nd.cfg.me}] codec self-check FAILED; message dropped"
       | none, _ => pure ()
 
-/-- Feed one event to the replica and carry out the consequences. -/
+/--
+Feed one event to the replica and carry out the consequences.
+
+**The durable state is committed before any action leaves this node.** That
+ordering is the shim's half of the crash-safety argument: the model makes a
+step's state change and its messages atomic, and only this discipline makes the
+implementation refine it. Losing messages is free — the network model already
+permits it — but a message that outlives the state justifying it is not.
+
+The commit is skipped when the durable trio did not change, which is the common
+case: heartbeats, replies and repeated votes touch none of it.
+-/
 def Node.dispatch (nd : Node) (ev : Event) : Async Unit := do
-  let acts ← nd.st.atomically do
+  let (before, after, acts) ← nd.st.atomically do
     let s ← get
     let (s', acts) := Protocol.step s ev
     set s'
-    pure acts
+    pure (Protocol.persistOf s, Protocol.persistOf s', acts)
+  match nd.store with
+  | some paths => if before != after then Store.commit paths after
+  | none => pure ()
   for a in acts do
     nd.exec a
 
@@ -196,12 +213,21 @@ def Node.httpHandler (nd : Node) : Server.StatelessHandler :=
     | _, _ => Response.notFound.text "usage: GET|PUT|DELETE /kv/<key>, GET /status\n"
 
 /-- Build a replica. -/
-def Node.create (cfg : Config) (peers : List (Nat × Net.SocketAddress)) : IO Node := do
-  let st ← Std.Mutex.new (Protocol.initState (σ := ArrayLog) (κ := HashKV) cfg)
+def Node.create (cfg : Config) (peers : List (Nat × Net.SocketAddress))
+    (dataDir : Option System.FilePath := none) : IO Node := do
+  let store := dataDir.map (Store.Paths.forNode · cfg.me)
+  let s0 ← match store with
+    | none => pure (Protocol.initState (σ := ArrayLog) (κ := HashKV) cfg)
+    | some paths => do
+        IO.FS.createDirAll (dataDir.getD "." )
+        let s ← Store.load paths cfg
+        IO.println s!"[node {cfg.me}] recovered term={s.currentTerm}           votedFor={repr s.votedFor} entries={LogStore.lastIndex s.log}"
+        pure s
+  let st ← Std.Mutex.new s0
   let waiters ← Std.Mutex.new (∅ : HashMap Nat (Channel Outcome))
   let nextReq ← IO.mkRef 1
   let heard ← IO.mkRef false
-  pure { cfg, st, peers, waiters, nextReq, heard }
+  pure { cfg, st, peers, waiters, nextReq, heard, store }
 
 /-- Start every loop and serve until shutdown. -/
 def Node.run (nd : Node) (raftAddr httpAddr : Net.SocketAddress) : Async Unit := do

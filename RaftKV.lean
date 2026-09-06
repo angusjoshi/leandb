@@ -12,6 +12,7 @@ import RaftKV.Storage.KV
 import RaftKV.Storage.KVHash
 import RaftKV.Protocol.Types
 import RaftKV.Protocol.Node
+import RaftKV.Runtime.Store
 import RaftKV.Runtime.Sim
 import RaftKV.Protocol.Codec
 import RaftKV.Protocol.Frame

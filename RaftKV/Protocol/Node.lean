@@ -62,6 +62,7 @@ structure Persistent (σ : Type) where
   votedFor : Option Nat
   /-- The replicated log. -/
   log : σ
+  deriving Repr, DecidableEq
 
 /-- The part of a node's state that must outlive a crash. -/
 def persistOf (s : NodeState σ κ) : Persistent σ :=
