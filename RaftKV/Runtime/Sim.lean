@@ -90,6 +90,19 @@ def World.crash (w : World) (i : Nat) : World :=
   else w
 
 /--
+Node `i` compacts its log: everything its state machine has already absorbed is
+discarded and replaced by the snapshot.
+
+Nothing observable changes, which is exactly what the safety checks should
+confirm — they are phrased over histories, so they see every entry that was ever
+applied whether or not the node still holds it.
+-/
+def World.compactNode (w : World) (i : Nat) : World :=
+  if h : i < w.nodes.size then
+    { w with nodes := w.nodes.set i (Protocol.compactTo w.nodes[i]) h }
+  else w
+
+/--
 Restart node `i` with `f` applied to the recovered state.
 
 Used to build **deliberately wrong** restarts that forget part of the durable

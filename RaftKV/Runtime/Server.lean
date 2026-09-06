@@ -79,6 +79,15 @@ def Node.exec (nd : Node) : Action → Async Unit
       | none, _ => pure ()
 
 /--
+How many applied entries to accumulate before compacting.
+
+A larger number means fewer snapshot writes and a longer replay after a
+restart; a smaller one keeps the log short. Nothing about correctness depends
+on the value.
+-/
+def compactEvery : Nat := 1024
+
+/--
 Feed one event to the replica and carry out the consequences.
 
 **The durable state is committed before any action leaves this node.** That
@@ -94,8 +103,14 @@ def Node.dispatch (nd : Node) (ev : Event) : Async Unit := do
   let (before, after, acts) ← nd.st.atomically do
     let s ← get
     let (s', acts) := Protocol.step s ev
-    set s'
-    pure (Protocol.persistOf s, Protocol.persistOf s', acts)
+    -- Then, when enough has piled up, compact: the model's `Step.compact`
+    -- taken immediately after this step. Doing both under one durable write is
+    -- exactly the two model steps in sequence — the compaction emits nothing,
+    -- so no observer can tell them apart.
+    let s'' :=
+      if s'.snapIndex + compactEvery ≤ s'.lastApplied then Protocol.compactTo s' else s'
+    set s''
+    pure (Protocol.persistOf s, Protocol.persistOf s'', acts)
   match nd.store with
   | some (paths, dir) => if before != after then Store.commit paths dir after
   | none => pure ()

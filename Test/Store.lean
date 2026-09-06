@@ -6,10 +6,12 @@ Round-trip the durable store through a real filesystem, including the
 alternating regions that make a commit copy-on-write.
 -/
 
-def sample (t : Nat) (v : Option Nat) (n : Nat) : Persistent ArrayLog :=
+def sample (t : Nat) (v : Option Nat) (n : Nat) (base : Nat := 0)
+    (snap : List (String × String) := []) : Persistent ArrayLog :=
   { currentTerm := t, votedFor := v
-    log := ⟨(List.range n).toArray.map (fun i =>
-      { term := i + 1, cmd := .put s!"k{i}" s!"v{i}", reqId := i })⟩ }
+    log := ⟨base, (List.range n).toArray.map (fun i =>
+      { term := i + 1, cmd := .put s!"k{i}" s!"v{i}", reqId := i })⟩
+    snapIndex := base, snapPairs := snap }
 
 def check : IO (List Bool) := do
   let dir : System.FilePath := "/tmp/raftkv-store-test"
@@ -28,7 +30,8 @@ def check : IO (List Bool) := do
   commit p dir s2
   let r2 ← recover p
   let live2 := (← readRoot p).map Prod.fst
-  let s3 := sample 9 (some 0) 0
+  -- and a compacted node: a base offset with a state-machine snapshot in its place
+  let s3 := sample 9 (some 0) 2 5 [("k0", "v0"), ("k1", "v1")]
   commit p dir s3
   let r3 ← recover p
   let live3 := (← readRoot p).map Prod.fst

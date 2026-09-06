@@ -56,7 +56,7 @@ def tick (crash : World → Nat → World) (n : Nat) (rid : Nat) (w : World) (se
     (w.fire node .electionTimeout, s)
   else if choice < 92 then
     (w.fire node .heartbeatTimeout, s)
-  else if choice < 98 then
+  else if choice < 96 then
     -- a mixed workload: reads and deletes as well as writes, so that a reply
     -- actually depends on the state and `repliesMatchSpec` has something to say
     let key := s!"k{rid % 3}"
@@ -67,6 +67,9 @@ def tick (crash : World → Nat → World) (n : Nat) (rid : Nat) (w : World) (se
       | 2 => .get key
       | _ => .del key
     (w.fire node (.clientReq rid cmd), s)
+  else if choice < 98 then
+    -- compact a node's log, throwing away what its snapshot now covers
+    (w.compactNode node, s)
   else
     -- crash and restart a node
     (crash w node, s)
@@ -120,6 +123,11 @@ def run (crash : World → Nat → World) (n : Nat) : Nat → World → Nat → 
 
 /-! ## Property checks -/
 
+/-- How much of the cluster's log has been compacted away, for diagnostics. -/
+def compacted (w : World) : Nat :=
+  (List.range w.nodes.size).foldl
+    (fun acc i => acc + (if h : i < w.nodes.size then w.nodes[i].snapIndex else 0)) 0
+
 /-- Indices worth checking. -/
 def idxs (w : World) : List Nat :=
   List.range (1 + (List.range w.nodes.size).foldl
@@ -127,6 +135,10 @@ def idxs (w : World) : List Nat :=
 
 def logAt (w : World) (i k : Nat) : Option Entry :=
   if h : i < w.nodes.size then LogStore.get w.nodes[i].log k else none
+
+/-- The lowest index node `i` still holds. Above `1` once it has compacted. -/
+def firstAt (w : World) (i : Nat) : Nat :=
+  if h : i < w.nodes.size then LogStore.firstIndex w.nodes[i].log else 1
 
 /-- Role of node `i`. -/
 def roleAt (w : World) (i : Nat) : Role :=
@@ -156,14 +168,22 @@ def entriesAgree (w : World) : Bool :=
         | some a, some b => !(a.term == b.term) || a == b
         | _, _ => true
 
-/-- **Log Matching, part two**: agreement at an index implies agreement below. -/
+/--
+**Log Matching, part two**: agreement at an index implies agreement below —
+at every index both nodes still hold.
+
+The window guard is compaction's doing, and is exactly the one the theorem
+carries: a node that has discarded a prefix no longer has the low entries to
+compare, and that is not a disagreement.
+-/
 def prefixesAgree (w : World) : Bool :=
   (idxs w).all fun k =>
     (List.range w.nodes.size).all fun i =>
       (List.range w.nodes.size).all fun j =>
         match logAt w i k, logAt w j k with
         | some a, some b =>
-            !(a == b) || (List.range (k + 1)).all fun m => logAt w i m == logAt w j m
+            !(a == b) || (List.range (k + 1)).all fun m =>
+              !(firstAt w i ≤ m && firstAt w j ≤ m) || logAt w i m == logAt w j m
         | _, _ => true
 
 /-- **State Machine Safety**: applied entries never disagree. -/
