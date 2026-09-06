@@ -1,0 +1,10 @@
+name = "raftkv"
+version = "0.1.0"
+defaultTargets = ["RaftKV", "raftkv"]
+
+[[lean_lib]]
+name = "RaftKV"
+
+[[lean_exe]]
+name = "raftkv"
+root = "Main"
