@@ -546,6 +546,57 @@ theorem step_snapIndex {σ' : Type} [LogStore σ'] {κ' : Type} [KVStore κ']
       · rw [startElection]; dsimp only; split <;> simp [becomeLeader]
   | heartbeatTimeout => rw [Protocol.step]; split <;> rfl
 
+/-- Nor the snapshotted state machine. -/
+theorem step_snapKV {σ' : Type} [LogStore σ'] {κ' : Type} [KVStore κ']
+    (s : NodeState σ' κ') (ev : Event) :
+    (Protocol.step s ev).1.snapKV = s.snapKV := by
+  have hmsd : ∀ t v, (maybeStepDown s t v).1.snapKV = s.snapKV := by
+    intro t v; rw [maybeStepDown]; split <;> rfl
+  cases ev with
+  | recv src m =>
+      cases m with
+      | requestVote term candId li lt =>
+          rw [Protocol.step, handleRequestVote]
+          split
+          · rfl
+          · dsimp only; split <;> simp [hmsd]
+      | requestVoteResp term g =>
+          rw [Protocol.step, handleRequestVoteResp]
+          split
+          · rfl
+          · split
+            · rfl
+            · dsimp only; split <;> (split <;> simp [becomeLeader, stepDown])
+      | appendEntries term l pi pt es lc =>
+          rw [Protocol.step, handleAppendEntries]
+          split
+          · rfl
+          · dsimp only; split
+            · simp [hmsd]
+            · dsimp only; simp [hmsd]
+      | appendEntriesResp term ok mi =>
+          rw [Protocol.step, handleAppendEntriesResp]
+          split
+          · rfl
+          · split
+            · rfl
+            · split
+              · rw [applyCommitted_snapKV, advanceCommit]
+                split <;> rfl
+              · rfl
+  | clientReq rid c =>
+      rw [Protocol.step, handleClientReq]
+      split
+      · rfl
+      · dsimp only
+        rw [applyCommitted_snapKV, advanceCommit]
+        split <;> rfl
+  | electionTimeout =>
+      rw [Protocol.step]; split
+      · rfl
+      · rw [startElection]; dsimp only; split <;> simp [becomeLeader]
+  | heartbeatTimeout => rw [Protocol.step]; split <;> rfl
+
 /-- No handler ever un-applies: `lastApplied` only grows. -/
 theorem step_lastApplied_mono {σ' : Type} [LogStore σ'] {κ' : Type} [KVStore κ']
     (s : NodeState σ' κ') (ev : Event) :

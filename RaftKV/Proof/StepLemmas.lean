@@ -94,6 +94,23 @@ theorem applyCommitted_lastApplied_ge (s : NodeState σ κ) :
     (applyOne s).1.snapIndex = s.snapIndex := by
   rw [applyOne]; split <;> rfl
 
+@[simp] theorem applyOne_snapKV (s : NodeState σ κ) :
+    (applyOne s).1.snapKV = s.snapKV := by
+  rw [applyOne]; split <;> rfl
+
+@[simp] theorem applyLoop_snapKV (f : Nat) (s : NodeState σ κ) (acc : List Action) :
+    (applyLoop f s acc).1.snapKV = s.snapKV := by
+  induction f generalizing s acc with
+  | zero => rfl
+  | succ n ih =>
+      rw [applyLoop]
+      split
+      · rw [ih]; exact applyOne_snapKV s
+      · rfl
+
+@[simp] theorem applyCommitted_snapKV (s : NodeState σ κ) :
+    (applyCommitted s).1.snapKV = s.snapKV := applyLoop_snapKV _ _ _
+
 @[simp] theorem applyLoop_snapIndex (f : Nat) (s : NodeState σ κ) (acc : List Action) :
     (applyLoop f s acc).1.snapIndex = s.snapIndex := by
   induction f generalizing s acc with

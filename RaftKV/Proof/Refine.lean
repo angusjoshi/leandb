@@ -49,13 +49,20 @@ section Lawful
 
 variable [LawfulKVStore κ]
 
-/-- The state machine's applied prefix. -/
-def AppliedModel (s : NodeState σ κ) : Prop :=
-  LawfulKVStore.toModel s.kv = Spec.run (cmdsUpTo s.log s.lastApplied)
+/--
+The state machine's applied prefix, measured against the **logical** log.
+
+Compaction is why this is not measured against the node's own log: the entries
+the snapshot covers are no longer there to run, but they did run.
+-/
+def AppliedModel (fl : σ) (s : NodeState σ κ) : Prop :=
+  LawfulKVStore.toModel s.kv = Spec.run (cmdsUpTo fl s.lastApplied)
 
 /-- **`applyOne` keeps the state machine equal to the specification's run.** -/
-theorem applyOne_refines (s : NodeState σ κ) (h : AppliedModel s) :
-    AppliedModel (applyOne s).1 := by
+theorem applyOne_refines (fl : σ) (s : NodeState σ κ)
+    (hbr : ∀ k, LogStore.firstIndex s.log ≤ k → LogStore.get s.log k = LogStore.get fl k)
+    (hfa : LogStore.firstIndex s.log ≤ s.lastApplied + 1)
+    (h : AppliedModel fl s) : AppliedModel fl (applyOne s).1 := by
   unfold AppliedModel at h ⊢
   rw [applyOne]
   cases hq : LogStore.get s.log (s.lastApplied + 1) with
@@ -69,24 +76,34 @@ theorem applyOne_refines (s : NodeState σ κ) (h : AppliedModel s) :
               = (Spec.applyCmd (LawfulKVStore.toModel s.kv) e.cmd).1 := by
             have := KVStore.applyCmd_state s.kv e.cmd
             rw [hkv] at this; exact this
-          rw [hst, h, cmdsUpTo_succ hq]
+          rw [hst, h, cmdsUpTo_succ (by rw [← hbr _ hfa]; exact hq)]
           unfold Spec.run
           rw [Spec.applyAll_append]
           rfl
 
 /-- **`applyLoop` keeps the state machine equal to the specification's run.** -/
-theorem applyLoop_refines (f : Nat) (s : NodeState σ κ) (acc : List Action)
-    (h : AppliedModel s) : AppliedModel (applyLoop f s acc).1 := by
+theorem applyLoop_refines (fl : σ) (f : Nat) (s : NodeState σ κ) (acc : List Action)
+    (hbr : ∀ k, LogStore.firstIndex s.log ≤ k → LogStore.get s.log k = LogStore.get fl k)
+    (hfa : LogStore.firstIndex s.log ≤ s.lastApplied + 1)
+    (h : AppliedModel fl s) : AppliedModel fl (applyLoop f s acc).1 := by
   induction f generalizing s acc with
   | zero => rw [applyLoop]; exact h
   | succ n ih =>
       rw [applyLoop]
       split
-      · exact ih _ _ (applyOne_refines s h)
+      · have hlog : (applyOne s).1.log = s.log := applyOne_log s
+        have hla : s.lastApplied ≤ (applyOne s).1.lastApplied := applyOne_lastApplied_ge s
+        exact ih (applyOne s).1 (acc ++ (applyOne s).2)
+          (fun k hk => by rw [hlog] at hk ⊢; exact hbr k hk)
+          (by rw [hlog]; omega)
+          (applyOne_refines fl s hbr hfa h)
       · exact h
 
-theorem applyCommitted_refines (s : NodeState σ κ) (h : AppliedModel s) :
-    AppliedModel (applyCommitted s).1 := applyLoop_refines _ s [] h
+theorem applyCommitted_refines (fl : σ) (s : NodeState σ κ)
+    (hbr : ∀ k, LogStore.firstIndex s.log ≤ k → LogStore.get s.log k = LogStore.get fl k)
+    (hfa : LogStore.firstIndex s.log ≤ s.lastApplied + 1)
+    (h : AppliedModel fl s) : AppliedModel fl (applyCommitted s).1 :=
+  applyLoop_refines fl _ s [] hbr hfa h
 
 end Lawful
 
@@ -154,7 +171,12 @@ section Lawful
 variable [LawfulKVStore κ]
 
 /-- Every replica's state machine is the specification run on its applied prefix. -/
-def SMRefines (w : World σ κ) : Prop := ∀ i, AppliedModel (w.nodes i)
+def SMRefines (w : World σ κ) : Prop := ∀ i, AppliedModel (w.full i) (w.nodes i)
+
+/-- And its snapshot is the run of everything the snapshot covers. -/
+def SnapRefines (w : World σ κ) : Prop :=
+  ∀ i, LawfulKVStore.toModel (w.nodes i).snapKV
+    = Spec.run (cmdsUpTo (w.full i) (w.nodes i).snapIndex)
 
 /--
 **The replicated state machine refines the sequential specification.**
@@ -162,53 +184,73 @@ def SMRefines (w : World σ κ) : Prop := ∀ i, AppliedModel (w.nodes i)
 In every reachable world, each replica's key/value state is exactly what the
 sequential specification produces from the commands that replica has applied.
 -/
-theorem smRefines_reachable {members : List Nat} {w : World σ κ}
-    (hnd : members.Nodup) (h : Reachable members w) : SMRefines w := by
+theorem smRefines_snap {members : List Nat} {w : World σ κ}
+    (hnd : members.Nodup) (h : Reachable members w) : SMRefines w ∧ SnapRefines w := by
   induction h with
   | init =>
-      intro i
-      unfold AppliedModel
-      have h1 : (World.init (σ := σ) (κ := κ) members).nodes i
-          = Protocol.initState { me := i, members := members } := rfl
-      rw [h1]
-      simp only [Protocol.initState]
-      rw [LawfulKVStore.model_empty]
-      rfl
+      refine ⟨fun i => ?_, fun i => ?_⟩
+      · unfold AppliedModel
+        have h1 : (World.init (σ := σ) (κ := κ) members).nodes i
+            = Protocol.initState { me := i, members := members } := rfl
+        rw [h1]
+        simp only [Protocol.initState]
+        rw [LawfulKVStore.model_empty]
+        rfl
+      · have h1 : (World.init (σ := σ) (κ := κ) members).nodes i
+            = Protocol.initState { me := i, members := members } := rfl
+        rw [h1]
+        simp only [Protocol.initState]
+        rw [LawfulKVStore.model_empty]
+        rfl
   | @tail w0 w1 hr hs ih =>
       have hr1 : Reachable members w1 := Reachable.tail hr hs
       have hsi := sInv_reachable hnd hr
       have hab := appliedBound_reachable hr
       have key : ∀ (j : Nat) (ev : Event), w1 = w0.act j ev →
-          (∀ src m', ev = Event.recv src m' → (src, j, m') ∈ w0.sent) → SMRefines w1 := by
+          (∀ src m', ev = Event.recv src m' → (src, j, m') ∈ w0.sent) →
+          SMRefines w1 ∧ SnapRefines w1 := by
         intro j ev hw hdel
         subst hw
-        intro i
-        by_cases hij : i = j
-        · subst hij
-          have hlog := step_log_below_applied hnd hr (j := i) (ev := ev) hdel
-          have hpre : AppliedModel
-              ({ (w0.nodes i) with log := (Protocol.step (w0.nodes i) ev).1.log }
-                : NodeState σ κ) := by
+        have hlog : ∀ i, i = j → ∀ k, k ≤ (w0.nodes i).lastApplied →
+            LogStore.get (fullStep (w0.nodes i) (w0.full i) ev) k
+              = LogStore.get (w0.full i) k := by
+          intro i hij; subst hij
+          exact step_log_below_applied hnd hr (j := i) (ev := ev) hdel
+        refine ⟨fun i => ?_, fun i => ?_⟩
+        · by_cases hij : i = j
+          · subst hij
+            rw [act_nodes_self, act_full_self]
             unfold AppliedModel
-            dsimp only
-            rw [cmdsUpTo_congr (lg₂ := (w0.nodes i).log) _ hlog]
-            exact ih i
-          rw [act_nodes_self]
-          unfold AppliedModel
-          rcases step_kv_shape (w0.nodes i) ev with ⟨hkv, hla⟩ | ⟨s', h1, h2, h3, h4, h5⟩
-          · rw [hkv, hla, cmdsUpTo_congr _ hlog]
-            exact ih i
-          · have hs' : AppliedModel s' := by
-              unfold AppliedModel
-              rw [h1, h2, h3]
-              exact hpre
-            have := applyCommitted_refines s' hs'
-            unfold AppliedModel at this
-            rw [h4, h5, this]
-            have hlogeq : (applyCommitted s').1.log = (Protocol.step (w0.nodes i) ev).1.log := by
-              rw [← h3]; simp
-            rw [hlogeq]
-        · rw [act_nodes_ne _ _ _ hij]; exact ih i
+            have hlg := hlog i rfl
+            rcases step_kv_shape (w0.nodes i) ev with ⟨hkv, hla⟩ | ⟨s', h1, h2, h3, h4, h5⟩
+            · rw [hkv, hla, cmdsUpTo_congr _ hlg]
+              exact ih.1 i
+            · have hs' : AppliedModel (fullStep (w0.nodes i) (w0.full i) ev) s' := by
+                unfold AppliedModel
+                rw [h1, h2, cmdsUpTo_congr _ hlg]
+                exact ih.1 i
+              have hbr : ∀ k, LogStore.firstIndex s'.log ≤ k →
+                  LogStore.get s'.log k
+                    = LogStore.get (fullStep (w0.nodes i) (w0.full i) ev) k := by
+                rw [h3]
+                intro k hk
+                have := full_get hr1 (i := i) (k := k) (by rw [act_nodes_self]; exact hk)
+                rwa [act_nodes_self, act_full_self] at this
+              have hfa : LogStore.firstIndex s'.log ≤ s'.lastApplied + 1 := by
+                rw [h3, h2, step_firstIndex]
+                exact full_applied hr i
+              have hac := applyCommitted_refines _ s' hbr hfa hs'
+              unfold AppliedModel at hac
+              rw [h4, h5]
+              exact hac
+          · rw [act_nodes_ne _ _ _ hij, act_full_ne _ _ _ hij]; exact ih.1 i
+        · by_cases hij : i = j
+          · subst hij
+            rw [act_nodes_self, act_full_self, step_snapKV, step_snapIndex]
+            rw [cmdsUpTo_congr _ (fun k hk => hlog i rfl k
+              (Nat.le_trans hk (full_snapIndex hr i)))]
+            exact ih.2 i
+          · rw [act_nodes_ne _ _ _ hij, act_full_ne _ _ _ hij]; exact ih.2 i
       cases hs with
       | deliver s d m0 hd hmem =>
           refine key d _ rfl ?_
@@ -220,16 +262,33 @@ theorem smRefines_reachable {members : List Nat} {w : World σ κ}
       | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
       | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
       | crash k hk =>
-          -- the state machine is rebuilt by replay: empty, having applied nothing
-          intro i
-          by_cases hik : i = k
-          · subst hik
-            unfold AppliedModel
-            rw [crash_nodes_self, restart_kv, restart_lastApplied, restart_log,
-              LawfulKVStore.model_empty]
-            rfl
-          · rw [crash_nodes_ne _ _ hik]; exact ih i
+          -- the state machine restarts from the snapshot, at the index it covers
+          refine ⟨fun i => ?_, fun i => ?_⟩
+          · unfold AppliedModel
+            rw [crash_full]
+            by_cases hik : i = k
+            · subst hik
+              rw [crash_nodes_self, restart_kv, restart_lastApplied,
+                LawfulKVStore.model_pairs]
+              exact ih.2 i
+            · rw [crash_nodes_ne _ _ hik]; exact ih.1 i
+          · rw [crash_full]
+            by_cases hik : i = k
+            · subst hik
+              rw [crash_nodes_self, restart_snapKV, restart_snapIndex,
+                LawfulKVStore.model_pairs]
+              exact ih.2 i
+            · rw [crash_nodes_ne _ _ hik]; exact ih.2 i
 
+/--
+**The replicated state machine refines the sequential specification.**
+
+In every reachable world, each replica's key/value state is exactly what the
+sequential specification produces from the commands that replica has applied.
+-/
+theorem smRefines_reachable {members : List Nat} {w : World σ κ}
+    (hnd : members.Nodup) (h : Reachable members w) : SMRefines w :=
+  (smRefines_snap hnd h).1
 
 /--
 **The state machine still matches the run of the *new* log**, before the step's
@@ -239,11 +298,9 @@ needs: a step may splice the log, but never below what has already been applied.
 theorem step_appliedModel_pre {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (hrch : Reachable members w) {j : Nat} {ev : Event}
     (hdel : ∀ src m', ev = Event.recv src m' → (src, j, m') ∈ w.sent) :
-    AppliedModel ({ (w.nodes j) with
-      log := (Protocol.step (w.nodes j) ev).1.log } : NodeState σ κ) := by
+    AppliedModel (fullStep (w.nodes j) (w.full j) ev) (w.nodes j) := by
   unfold AppliedModel
-  dsimp only
-  rw [cmdsUpTo_congr (lg₂ := (w.nodes j).log) _ (step_log_below_applied hnd hrch hdel)]
+  rw [cmdsUpTo_congr (lg₂ := w.full j) _ (step_log_below_applied hnd hrch hdel)]
   exact smRefines_reachable hnd hrch j
 
 /--
@@ -261,27 +318,29 @@ theorem replicas_agree {members : List Nat} {w : World σ κ}
   have hsi := sInv_reachable hnd hrch
   have hsms := stateMachineSafety hnd hrch
   -- the applied prefixes hold the same commands
-  have hcmds : cmdsUpTo (w.nodes i).log (w.nodes i).lastApplied
-      = cmdsUpTo (w.nodes j).log (w.nodes j).lastApplied := by
+  have hcmds : cmdsUpTo (w.full i) (w.nodes i).lastApplied
+      = cmdsUpTo (w.full j) (w.nodes j).lastApplied := by
     rw [← heq]
     refine cmdsUpTo_congr _ ?_
     intro k hk
     rcases Nat.eq_zero_or_pos k with h0 | h0
     · subst h0; simp
-    · obtain ⟨e₁, h1⟩ : ∃ e, LogStore.get (w.nodes i).log k = some e := by
-        cases hq : LogStore.get (w.nodes i).log k with
+    · obtain ⟨e₁, h1⟩ : ∃ e, LogStore.get (w.full i) k = some e := by
+        cases hq : LogStore.get (w.full i) k with
         | none =>
             exfalso
-            have := (LogStore.get_isSome_iff (w.nodes i).log k).mpr
-              ⟨h0, by have := hab i; have := hsi.bound i; omega⟩
+            have := (LogStore.get_isSome_iff (w.full i) k).mpr
+              ⟨by rw [full_firstIndex hrch i]; omega,
+                by have := hab i; have := hsi.bound i; omega⟩
             rw [hq] at this; exact Bool.noConfusion this
         | some e => exact ⟨e, rfl⟩
-      obtain ⟨e₂, h2⟩ : ∃ e, LogStore.get (w.nodes j).log k = some e := by
-        cases hq : LogStore.get (w.nodes j).log k with
+      obtain ⟨e₂, h2⟩ : ∃ e, LogStore.get (w.full j) k = some e := by
+        cases hq : LogStore.get (w.full j) k with
         | none =>
             exfalso
-            have := (LogStore.get_isSome_iff (w.nodes j).log k).mpr
-              ⟨h0, by have := hab j; have := hsi.bound j; omega⟩
+            have := (LogStore.get_isSome_iff (w.full j) k).mpr
+              ⟨by rw [full_firstIndex hrch j]; omega,
+                by have := hab j; have := hsi.bound j; omega⟩
             rw [hq] at this; exact Bool.noConfusion this
         | some e => exact ⟨e, rfl⟩
       rw [h1, h2, hsms i j k e₁ e₂ hk (by omega) h1 h2]
