@@ -13,9 +13,10 @@ import RaftKV
 X
 ```
 
-**Status: all four of Raft's safety properties are proved**, and the refinement
-chain from the sequential key/value specification down to the replicas'
-observable state is closed (`Proof.replicas_agree`). See below.
+**Status: all four of Raft's safety properties are proved, and the store is
+proved linearizable** (`Proof.linearizable`) — every answer the cluster ever
+gave is the answer a single sequential key/value store would have given, in one
+order that never contradicts real time. See below.
 
 ## Proved
 
@@ -320,15 +321,67 @@ safety properties plus the storage abstractions' laws. Swapping `ArrayLog` or
 `HashKV` for a faster implementation costs only a proof of that interface's
 laws; every theorem above transports unchanged.
 
+### Linearizability
+
+The client-visible history lives in two more ghost fields: `World.clock`, the
+number of steps taken, and `World.hist`, the list of invocations and responses
+stamped with that clock. Because the model is an interleaving semantics, step
+order **is** real-time order, so "A's response happened before B's invocation"
+is exactly `respond`'s stamp being strictly below `invoke`'s. `Action.reply` now
+also carries the log index at which the command took effect — its linearization
+point, which the runtime ignores.
+
+| Theorem | Statement |
+|---|---|
+| `Proof.reply_from_applyCommitted` | Every client reply is produced by draining the commit queue, against the step's own log and commit index |
+| `Proof.applyLoop_reply` | **Every reply the apply loop emits is the sequential specification's answer** for the command at its index, run on the commands below it |
+| `Proof.step_reply` | ...and therefore so is every reply a step emits, at an index that is committed |
+| `Proof.lInv_reachable` (`CreatedTime`, `CommitsTime`, `CommitTimeIsCommit`, `CreateInvoke`, `CommitCreate`, `RespondCommitted`) | Entries and commits are stamped; **nothing is minted that a client did not ask for at that very moment**; **nothing is committed before it was minted**; and every response is the specification's answer at a commit that had already happened |
+| **`Proof.realtime`** | **A request answered before another was submitted is ordered before it.** If `nB ≤ nA` then `ridB`'s entry was already committed at `nB` when `ridA` was answered — committed indices are downward closed and `committed_unique` fixes an index's entry for ever — so `ridB` was minted, hence submitted, before that, contradicting distinct request ids |
+| `Proof.logEntries`, `logEntries_full`, `logEntries_take`, `logEntries_cmds`, `maxCommit_ge` | The committed log as a concrete `List Entry`, and the commit record that reaches furthest |
+| **`Proof.linearizable`** | **Linearizability** |
+
+Statement, as machine-checked:
+
+```lean
+theorem linearizable {members : List Nat} {w : World σ κ}
+    (hnd : members.Nodup) (hrch : Reachable members w) (hfresh : Protocol.FreshIds w) :
+    ∃ L : List Entry,
+      -- 1. every answer is the sequential specification's answer, at its place in `L`
+      (∀ t rid n r, Protocol.Answered w t rid n r →
+          ∃ e, L[n - 1]? = some e ∧ e.reqId = rid
+            ∧ r = (Spec.applyCmd (Spec.run ((L.take (n - 1)).map Entry.cmd)) e.cmd).2)
+      -- 2. `L` never contradicts real time
+      ∧ (∀ tA ridA nA rA tB ridB tB' nB rB,
+          Protocol.Answered w tA ridA nA rA →
+          Protocol.Submitted w tB ridB →
+          Protocol.Answered w tB' ridB nB rB →
+          tA < tB → nA < nB)
+      -- 3. every replica has executed a prefix of `L`
+      ∧ (∀ i, LawfulKVStore.toModel (w.nodes i).kv
+            = Spec.run ((L.take (w.nodes i).lastApplied).map Entry.cmd))
+```
+
+`Submitted`, `Answered` and `FreshIds` are defined next to the other safety
+statements in `RaftKV/Protocol/Network.lean`, so the statement can be read
+without reading any proof.
+
+**Scope, stated honestly.** The claim is about operations that received a
+`reply`. A request refused with `notLeader` is an *incomplete* operation: its
+entry may or may not have been appended, and may or may not commit later.
+Linearizability places no constraint on incomplete operations, and this theorem
+places none either — which is exactly why request ids exist and why a client
+must retry with the same id. `FreshIds` is the client's half of the contract:
+one id per operation.
+
 ## Not proved
 
 - **Liveness** — deliberately out of scope; Raft guarantees none without timing
   assumptions.
-- **Linearizability** of the HTTP interface as a whole. `replicas_agree` gives
-  replica agreement and specification conformance of the applied prefix, which
-  is the state half of linearizability; the ordering half (that every client
-  response corresponds to a point between invocation and return) is not
-  formalised, and would need the request/response history in the model.
+- **Client-side retry semantics.** A client that retries after a `notLeader`
+  refusal may have its command committed twice, under two indices; the model
+  records both as separate operations. Exactly-once execution would need
+  duplicate suppression keyed on the request id, which is not implemented.
 - **Crash recovery** — see "Known unsoundness" below.
 
 ## The proved properties, also tested
@@ -344,6 +397,11 @@ Result: **0 failures** across 710 schedules — 300 × 400 steps on 3 nodes,
 200 × 800 on 5 nodes, 60 × 1200 on 3 nodes, and 150 × 600 on 4 nodes. The sweep
 is not vacuous: 87/100 3-node runs end with an elected leader, and a
 deliberately false check is caught 299 times out of 300.
+
+`Test/Sim.lean` additionally runs a 3-node cluster in-process and prints the
+replies it produced — `[(1, ok), (2, value (some "v1")), (3, ok), (4, value
+(some "v2"))]` — which is what a sequential store would answer, and shows the
+linearizability theorem is not vacuous: replies really are emitted.
 
 This is now belt-and-braces rather than the primary evidence, and is not part of
 the trusted path.

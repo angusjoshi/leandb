@@ -98,7 +98,7 @@ def applyOne (s : NodeState σ κ) : NodeState σ κ × List Action :=
   | none => (s, [])
   | some e =>
     let (kv', r) := KVStore.applyCmd s.kv e.cmd
-    let acts := if s.pending.any (fun p => p.1 == i) then [Action.reply e.reqId r] else []
+    let acts := if s.pending.any (fun p => p.1 == i) then [Action.reply i e.reqId r] else []
     ({ s with kv := kv', lastApplied := i,
               pending := s.pending.filter (fun p => p.1 != i) }, acts)
 

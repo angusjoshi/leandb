@@ -429,6 +429,30 @@ theorem sInv_reachable {members : List Nat} {w : World σ κ}
   | init => exact sInv_init members
   | tail hr hs ih => exact sInv_step hnd hr ih hs
 
+
+/--
+**A step never disturbs a node's log at or below what it has already applied.**
+
+The three ways a log can change: it does not, it gains one entry at the top, or
+it is spliced — and a splice preserves everything at or below the commit index,
+which is at least `lastApplied`.
+-/
+theorem step_log_below_applied {members : List Nat} {w : World σ κ}
+    (hnd : members.Nodup) (hr : Reachable members w) {j : Nat} {ev : Event}
+    (hdel : ∀ src m', ev = Event.recv src m' → (src, j, m') ∈ w.sent) :
+    ∀ k, k ≤ (w.nodes j).lastApplied →
+      LogStore.get (Protocol.step (w.nodes j) ev).1.log k = LogStore.get (w.nodes j).log k := by
+  have hsi := sInv_reachable hnd hr
+  have hab := appliedBound_reachable hr
+  intro k hk
+  rcases step_log (w.nodes j) ev with hl | ⟨rid, cmd, _, hl⟩ |
+    ⟨src, term, l, pi, pt, es, lc, hev, hl, hpi, hchk, _, hct⟩
+  · rw [hl]
+  · rw [hl, LogStore.get_append, if_neg (by have := hab j; have := hsi.bound j; omega)]
+  · rw [hl]
+    exact splice_preserves hnd hr hsi (hdel src _ hev) hpi hchk hct k
+      (Nat.le_trans hk (hab j))
+
 /-- **State Machine Safety.** Two replicas never apply different entries at one index. -/
 theorem stateMachineSafety {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (hrch : Reachable members w) : Protocol.StateMachineSafety w := by

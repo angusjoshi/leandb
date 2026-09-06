@@ -41,3 +41,4 @@ import RaftKV.Proof.Attribution
 import RaftKV.Proof.LC
 import RaftKV.Proof.SMS
 import RaftKV.Proof.Refine
+import RaftKV.Proof.Linear

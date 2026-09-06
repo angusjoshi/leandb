@@ -185,17 +185,7 @@ theorem smRefines_reachable {members : List Nat} {w : World σ κ}
         intro i
         by_cases hij : i = j
         · subst hij
-          have hlog : ∀ k, k ≤ (w0.nodes i).lastApplied →
-              LogStore.get (Protocol.step (w0.nodes i) ev).1.log k
-                = LogStore.get (w0.nodes i).log k := by
-            intro k hk
-            rcases step_log (w0.nodes i) ev with hl | ⟨rid, cmd, _, hl⟩ |
-              ⟨src, term, l, pi, pt, es, lc, hev, hl, hpi, hchk, _, hct⟩
-            · rw [hl]
-            · rw [hl, LogStore.get_append, if_neg (by have := hab i; have := hsi.bound i; omega)]
-            · rw [hl]
-              exact splice_preserves hnd hr hsi (hdel src _ hev) hpi hchk hct k
-                (Nat.le_trans hk (hab i))
+          have hlog := step_log_below_applied hnd hr (j := i) (ev := ev) hdel
           have hpre : AppliedModel
               ({ (w0.nodes i) with log := (Protocol.step (w0.nodes i) ev).1.log }
                 : NodeState σ κ) := by
@@ -229,6 +219,22 @@ theorem smRefines_reachable {members : List Nat} {w : World σ κ}
       | electionTimeout k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
       | heartbeat k hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
       | client k rid cmd hk => exact key k _ rfl (fun _ _ hq => Event.noConfusion hq)
+
+
+/--
+**The state machine still matches the run of the *new* log**, before the step's
+own applications are taken into account. This is the hypothesis `step_reply`
+needs: a step may splice the log, but never below what has already been applied.
+-/
+theorem step_appliedModel_pre {members : List Nat} {w : World σ κ}
+    (hnd : members.Nodup) (hrch : Reachable members w) {j : Nat} {ev : Event}
+    (hdel : ∀ src m', ev = Event.recv src m' → (src, j, m') ∈ w.sent) :
+    AppliedModel ({ (w.nodes j) with
+      log := (Protocol.step (w.nodes j) ev).1.log } : NodeState σ κ) := by
+  unfold AppliedModel
+  dsimp only
+  rw [cmdsUpTo_congr (lg₂ := (w.nodes j).log) _ (step_log_below_applied hnd hrch hdel)]
+  exact smRefines_reachable hnd hrch j
 
 /--
 **End to end: replicas that have applied the same number of entries answer

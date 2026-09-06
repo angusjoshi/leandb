@@ -44,7 +44,7 @@ def World.absorb (w : World) (me : Nat) (acts : List Action) : World :=
   acts.foldl (fun w a =>
     match a with
     | .send to msg => { w with inflight := w.inflight ++ [(me, to, msg)] }
-    | .reply rid r => { w with replies := w.replies ++ [(rid, r)] }
+    | .reply _ rid r => { w with replies := w.replies ++ [(rid, r)] }
     | .notLeader rid _ => { w with refused := w.refused ++ [rid] }) w
 
 /-- Deliver an event to node `i`. -/

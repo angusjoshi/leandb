@@ -85,8 +85,14 @@ inductive Event where
 inductive Action where
   /-- Send a message to a peer. Delivery is best-effort. -/
   | send (to : Nat) (msg : Msg)
-  /-- Answer a client request that has now committed and applied. -/
-  | reply (reqId : Nat) (r : Reply)
+  /--
+  Answer a client request that has now committed and applied.
+
+  `idx` is the log index at which the command took effect — its **linearization
+  point**. The runtime ignores it; it exists so that the proof can say *where*
+  in the replicated log a client's answer was produced.
+  -/
+  | reply (idx reqId : Nat) (r : Reply)
   /-- Refuse a client request, optionally naming the node believed to be leader. -/
   | notLeader (reqId : Nat) (leaderHint : Option Nat)
   deriving Repr, DecidableEq, Inhabited

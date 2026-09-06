@@ -11,21 +11,38 @@ backed by a Raft-replicated log. The protocol core is a pure function, and
 | Leader Completeness | `Proof.leaderCompleteness` |
 | State Machine Safety | `Proof.stateMachineSafety` |
 
-On top of those, the refinement chain down to what a client observes is closed:
+On top of those, **the store is proved linearizable** — one theorem, saying the
+whole thing:
 
 ```lean
-theorem replicas_agree (hnd : members.Nodup) (hrch : Reachable members w)
-    (heq : (w.nodes i).lastApplied = (w.nodes j).lastApplied) :
-    LawfulKVStore.toModel (w.nodes i).kv = LawfulKVStore.toModel (w.nodes j).kv
-      ∧ ∀ k, KVStore.find (w.nodes i).kv k = KVStore.find (w.nodes j).kv k
+theorem linearizable (hnd : members.Nodup) (hrch : Reachable members w)
+    (hfresh : Protocol.FreshIds w) :
+    ∃ L : List Entry,
+      -- 1. every answer is the sequential specification's answer, at its place in `L`
+      (∀ t rid n r, Protocol.Answered w t rid n r →
+          ∃ e, L[n - 1]? = some e ∧ e.reqId = rid
+            ∧ r = (Spec.applyCmd (Spec.run ((L.take (n - 1)).map Entry.cmd)) e.cmd).2)
+      -- 2. `L` never contradicts real time
+      ∧ (∀ tA ridA nA rA tB ridB tB' nB rB,
+          Protocol.Answered w tA ridA nA rA →
+          Protocol.Submitted w tB ridB →
+          Protocol.Answered w tB' ridB nB rB →
+          tA < tB → nA < nB)
+      -- 3. every replica has executed a prefix of `L`
+      ∧ (∀ i, LawfulKVStore.toModel (w.nodes i).kv
+            = Spec.run ((L.take (w.nodes i).lastApplied).map Entry.cmd))
 ```
 
-together with `Proof.smRefines_reachable`: every replica's key/value state is
-exactly what the sequential specification `Spec.run` produces from the commands
-that replica has applied. Everything is `sorry`-free on Lean's three standard
-axioms. See **[PROOFS.md](PROOFS.md)** for the full inventory, the trusted base,
-and what is deliberately *not* proved (liveness, the ordering half of
-linearizability, crash recovery).
+In words: **there is one order `L` on the committed commands such that every
+answer the cluster ever gave is the answer a single, sequential key/value store
+would have given at that point in `L`; that order never contradicts real time;
+and every replica has executed a prefix of it.** The only assumption beyond
+reachability is that clients use distinct request ids.
+
+Everything is `sorry`-free on Lean's three standard axioms. See
+**[PROOFS.md](PROOFS.md)** for the full inventory, the trusted base, and what is
+deliberately *not* proved (liveness, exactly-once client retries, crash
+recovery).
 
 ## Run a 3-node cluster
 
@@ -90,10 +107,11 @@ RaftKV/
     Codec.lean           token encoding, round-trip proved
     Frame.lean           framing (trusted, tested)
     Network.lean         World / Step / Reachable + safety statements
-  Proof/                 29 modules, ~9.7k lines:
+  Proof/                 30 modules, ~10.6k lines:
                          quorum intersection, terms, votes, election safety,
                          log matching, change attribution, leader completeness,
-                         state machine safety, state-machine refinement
+                         state machine safety, state-machine refinement,
+                         linearizability
   Runtime/
     Sim.lean             deterministic in-process cluster simulator
     Server.lean          the I/O shim (trusted)

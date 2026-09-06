@@ -27,7 +27,7 @@ theorem mem_sendsOf {i : Nat} {acts : List Action} {p : Packet} (h : p ∈ sends
   rcases List.mem_filterMap.mp h with ⟨a, ha, heq⟩
   cases a with
   | send to m => exact ⟨to, m, by simpa using heq.symm, ha⟩
-  | reply _ _ => simp at heq
+  | reply _ _ _ => simp at heq
   | notLeader _ _ => simp at heq
 
 /-- `broadcastAppend` only ever emits `appendEntries`. -/

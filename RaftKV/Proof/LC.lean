@@ -284,7 +284,7 @@ theorem mem_voteLogOf {i v t : Nat} {lg : σ} {s : NodeState σ κ} {acts : List
   unfold voteLogOf at h
   rcases List.mem_filterMap.mp h with ⟨a, _, heq⟩
   cases a with
-  | reply _ _ => simp at heq
+  | reply _ _ _ => simp at heq
   | notLeader _ _ => simp at heq
   | send to msg =>
       cases msg with

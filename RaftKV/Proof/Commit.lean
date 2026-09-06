@@ -69,7 +69,7 @@ theorem mem_ackOf_cases {i p T m : Nat} {lg : σ} {s : NodeState σ κ} {acts : 
   · left
     rcases List.mem_filterMap.mp h with ⟨a, ha, heq⟩
     cases a with
-    | reply _ _ => simp at heq
+    | reply _ _ _ => simp at heq
     | notLeader _ _ => simp at heq
     | send to msg =>
         cases msg with

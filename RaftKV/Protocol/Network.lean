@@ -30,6 +30,21 @@ variable {σ κ : Type} [LogStore σ] [KVStore κ]
 abbrev Packet := Nat × Nat × Msg
 
 /--
+Ghost: one client-visible event, stamped with the step at which it happened.
+
+`time` is the value of the world's step counter, so it is a real-time clock in
+the only sense the model has one: the steps of the system are totally ordered,
+and `time` is that order. "A's response happened before B's invocation" is
+`respond`'s `time` being strictly less than `invoke`'s.
+-/
+inductive HEvent where
+  /-- A client submitted `cmd` to node `node` under request id `rid`. -/
+  | invoke (time node rid : Nat) (cmd : Command)
+  /-- Node `node` answered request `rid` with `r`, at log index `idx`. -/
+  | respond (time node rid idx : Nat) (r : Reply)
+  deriving Repr, DecidableEq, Inhabited
+
+/--
 A global state: every replica, everything ever sent, and a **ghost** record of
 every vote ever cast.
 
@@ -63,6 +78,14 @@ structure World (σ κ : Type) where
   voteLogs : List (Nat × Nat × σ)
   /-- Ghost: `(node, term, log)` snapshot taken at every step at which a node leads. -/
   leaderLogs : List (Nat × Nat × σ)
+  /-- Ghost: the number of steps taken so far — the model's clock. -/
+  clock : Nat
+  /-- Ghost: the client-visible history, in real-time (that is, step) order. -/
+  hist : List HEvent
+  /-- Ghost: `(entry, time)` for every entry a leader has minted. -/
+  createTime : List (Entry × Nat)
+  /-- Ghost: `(committed index, the log committed against, time)` for every commit. -/
+  commitTime : List (Nat × σ × Nat)
 
 /-- The packets a node's actions put on the network. -/
 def sendsOf (i : Nat) (acts : List Action) : List Packet :=
@@ -171,6 +194,31 @@ def voteOf (i : Nat) (s : NodeState σ κ) : List (Nat × Nat × Nat) :=
   | some c => [(i, c, s.currentTerm)]
   | none => []
 
+/--
+Ghost: the client-visible events node `i` produces in this step, at time `t`.
+
+An `Event.clientReq` is the invocation; each `Action.reply` is a response,
+carrying the log index at which the command took effect.
+-/
+def histOf (i : Nat) (ev : Event) (acts : List Action) (t : Nat) : List HEvent :=
+  (match ev with
+    | .clientReq rid cmd => [HEvent.invoke t i rid cmd]
+    | .recv _ _ => []
+    | .electionTimeout => []
+    | .heartbeatTimeout => [])
+  ++ acts.filterMap (fun a =>
+      match a with
+      | .reply idx rid r => some (HEvent.respond t i rid idx r)
+      | _ => none)
+
+/-- Ghost: when each minted entry was minted. -/
+def createTimeOf (i : Nat) (s : NodeState σ κ) (ev : Event) (t : Nat) : List (Entry × Nat) :=
+  (createdOf i s ev).map (fun r => (r.2.2, t))
+
+/-- Ghost: when each commit happened, and against which log. -/
+def commitTimeOf (i : Nat) (pre post : NodeState σ κ) (t : Nat) : List (Nat × σ × Nat) :=
+  (commitOf i pre post).map (fun r => (r.2.2.1, r.2.2.2.1, t))
+
 /-- Deliver `ev` to node `i`, recording whatever it transmits and votes. -/
 def World.act (w : World σ κ) (i : Nat) (ev : Event) : World σ κ :=
   let (s', acts) := Protocol.step (w.nodes i) ev
@@ -184,13 +232,18 @@ def World.act (w : World σ κ) (i : Nat) (ev : Event) : World σ κ :=
     commits := w.commits ++ commitOf i (w.nodes i) s',
     acks := w.acks ++ ackOf i s' acts,
     voteLogs := w.voteLogs ++ voteLogOf i s' acts,
-    leaderLogs := w.leaderLogs ++ leaderLogOf i s' }
+    leaderLogs := w.leaderLogs ++ leaderLogOf i s',
+    clock := w.clock + 1,
+    hist := w.hist ++ histOf i ev acts w.clock,
+    createTime := w.createTime ++ createTimeOf i s' ev w.clock,
+    commitTime := w.commitTime ++ commitTimeOf i (w.nodes i) s' w.clock }
 
 /-- The starting state: every node freshly initialised, nothing sent or voted. -/
 def World.init (members : List Nat) : World σ κ :=
   { nodes := fun i => Protocol.initState { me := i, members := members },
     sent := [], votes := [], led := [], created := [], chain := [], elected := [],
-    commits := [], acks := [], voteLogs := [], leaderLogs := [] }
+    commits := [], acks := [], voteLogs := [], leaderLogs := [],
+    clock := 0, hist := [], createTime := [], commitTime := [] }
 
 /--
 One step of the system. Only cluster members run the protocol.
@@ -265,6 +318,25 @@ def LogMatching [LawfulLogStore σ] (w : World σ κ) : Prop :=
     LogStore.get (w.nodes j).log idx = some e₂ →
     e₁.term = e₂.term →
     ∀ k ≤ idx, LogStore.get (w.nodes i).log k = LogStore.get (w.nodes j).log k
+
+/-! ### The client-visible history -/
+
+/-- A client submitted request `rid` at time `t`. -/
+def Submitted (w : World σ κ) (t rid : Nat) : Prop :=
+  ∃ (i : Nat) (cmd : Command), HEvent.invoke t i rid cmd ∈ w.hist
+
+/-- The cluster answered request `rid` with `r` at time `t`, at log index `n`. -/
+def Answered (w : World σ κ) (t rid n : Nat) (r : Reply) : Prop :=
+  ∃ i, HEvent.respond t i rid n r ∈ w.hist
+
+/--
+Clients never reuse a request id.
+
+This is the client's side of the contract, and it is what makes "the operation
+for `rid`" a well-defined thing to talk about.
+-/
+def FreshIds (w : World σ κ) : Prop :=
+  ∀ t₁ t₂ rid, Submitted w t₁ rid → Submitted w t₂ rid → t₁ = t₂
 
 /--
 **State Machine Safety.** Two nodes never apply different entries at the same

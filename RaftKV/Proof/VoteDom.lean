@@ -64,7 +64,7 @@ theorem voteDom_step {members : List Nat} {w w' : World σ κ}
       unfold voteLogOf at h'
       rcases List.mem_filterMap.mp h' with ⟨a, ha, heq⟩
       cases a with
-      | reply _ _ => simp at heq
+      | reply _ _ _ => simp at heq
       | notLeader _ _ => simp at heq
       | send to msg =>
           cases msg with

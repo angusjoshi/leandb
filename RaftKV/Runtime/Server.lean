@@ -59,7 +59,7 @@ def Node.resolve (nd : Node) (rid : Nat) (o : Outcome) : Async Unit := do
 
 /-- Execute one `Action` produced by `step`. -/
 def Node.exec (nd : Node) : Action → Async Unit
-  | .reply rid r => nd.resolve rid (.done r)
+  | .reply _ rid r => nd.resolve rid (.done r)
   | .notLeader rid hint => nd.resolve rid (.redirect hint)
   | .send to msg => do
       match nd.peers.lookup to, Frame.selfCheck msg with
