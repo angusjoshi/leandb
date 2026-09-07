@@ -100,7 +100,7 @@ instance : ByteCodec Node where
     | branch keys children =>
         show (match (1 : UInt8) :: ((ByteCodec.enc keys ++ ByteCodec.enc children) ++ rest) with
           | [] => none | t :: r => _) = _
-        simp only [List.cons_append, List.append_eq, List.append_assoc]
+        simp only [List.append_eq, List.append_assoc]
         rw [if_neg (by decide), if_pos (by decide),
           ByteCodec.dec_enc keys (ByteCodec.enc children ++ rest)]
         dsimp only
