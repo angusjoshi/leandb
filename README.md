@@ -12,37 +12,60 @@ backed by a Raft-replicated log. The protocol core is a pure function, and
 | State Machine Safety | `Proof.stateMachineSafety` |
 
 …and they hold in a model that includes **node crashes** and **log compaction**:
-`Step` has a `crash` rule, under which the durable trio (`currentTerm`,
-`votedFor`, the log) survives and everything else is rebuilt, and a `compact`
-rule, under which any node may throw away any prefix of its log at any time.
+`Step` has a `crash` rule, under which the durable state survives and everything
+else is rebuilt, and a `compact` rule, under which any node may throw away any
+prefix of its log at any time. A leader that has compacted past a follower ships
+it a snapshot instead, and that is in the model too.
 
 On top of those, **the store is proved linearizable** — one theorem, saying the
 whole thing:
 
 ```lean
-theorem linearizable (hnd : members.Nodup) (hrch : Reachable members w)
-    (hfresh : Protocol.FreshIds w) :
+theorem linearizable (hnd : members.Nodup) (hrch : Reachable members w) :
     ∃ L : List Entry,
       -- 1. every answer is the sequential specification's answer, at its place in `L`
       (∀ t rid n r, Protocol.Answered w t rid n r →
           ∃ e, L[n - 1]? = some e ∧ e.reqId = rid
-            ∧ r = (Spec.applyCmd (Spec.run ((L.take (n - 1)).map Entry.cmd)) e.cmd).2)
+            ∧ r = (Spec.applyEntry (Spec.runE (L.take (n - 1))) e).2)
       -- 2. `L` never contradicts real time
       ∧ (∀ tA ridA nA rA tB ridB tB' nB rB,
           Protocol.Answered w tA ridA nA rA →
-          Protocol.Submitted w tB ridB →
+          Protocol.FirstSubmitted w tB ridB →
           Protocol.Answered w tB' ridB nB rB →
           tA < tB → nA < nB)
       -- 3. every replica has executed a prefix of `L`
-      ∧ (∀ i, LawfulKVStore.toModel (w.nodes i).kv
-            = Spec.run ((L.take (w.nodes i).lastApplied).map Entry.cmd))
+      ∧ (∀ i, (⟨LawfulKVStore.toModel (w.nodes i).kv,
+              fun q => (w.nodes i).sessions.contains q⟩ : Spec.KVModel)
+            = Spec.runE (L.take (w.nodes i).lastApplied))
 ```
 
-In words: **there is one order `L` on the committed commands such that every
+In words: **there is one order `L` on the committed entries such that every
 answer the cluster ever gave is the answer a single, sequential key/value store
 would have given at that point in `L`; that order never contradicts real time;
-and every replica has executed a prefix of it.** The only assumption beyond
-reachability is that clients use distinct request ids.
+and every replica has executed a prefix of it.** There is no assumption beyond
+reachability.
+
+### Exactly once
+
+`Spec.applyEntry` is the specification **with duplicate suppression**: it takes
+an entry rather than a command, so it sees the request id, and a write whose
+request it has already carried out is not carried out again. That is what lets
+the theorem above cover a client that *retries*:
+
+```
+  rid 1:  del k        commits
+  rid 2:  put k "v"    commits
+  rid 1:  del k        retried, commits a second time
+```
+
+Without suppression that second `del` takes effect and `rid 2`'s write is
+silently gone. With it the read afterwards says `v` — and clause 2 asks for the
+request's *first* submission, because the operation happened once, at the commit
+that first submission led to. Reads are deliberately not suppressed: a retried
+read is a second operation, correctly ordered where it lands.
+
+The HTTP API takes the id as `?rid=<n>`; a client that retries sends the same
+one.
 
 ### Log compaction, and how the proof stayed modular
 
@@ -56,13 +79,20 @@ bridge invariant, `Proof.FullBridge`, whose `agree` clause says the real log is
 the logical log wherever the real log can still be read.
 
 The log interface's model became `List (Option Entry)` — a hole per discarded
-index — which is what let ~12.8k lines of protocol proof keep their shape: `get`
+index — which is what let ~14.5k lines of protocol proof keep their shape: `get`
 already returned an `Option`, and a discarded index simply reads `none`.
 
-Not implemented: **`InstallSnapshot`**. A follower that falls behind a leader
-which has compacted past it cannot be caught up. That is a liveness gap, not a
-safety one — a leader that cannot send is indistinguishable from one whose
-messages are all lost, which the network model already allows.
+A leader that has compacted past a follower ships it **`InstallSnapshot`**
+instead: the index the snapshot covers, the state machine as of it, and the entry
+*at* that index, which the receiver must be left holding so that ordinary
+replication can resume. The same logical-log trick carries it — `World.snapLogs`
+records what a leader could ship, and the receiver's logical log becomes the
+sender's recorded one, cut at the snapshot point.
+
+One case is still refused, deliberately: a follower whose log runs *past* the
+leader's snapshot point but disagrees below it. Installing there would drop
+entries the follower had acknowledged, which makes the acknowledgement invariant
+false rather than merely hard to prove.
 
 ### Storage, on a device that tears writes
 
@@ -99,9 +129,14 @@ The encoding round-trips all the way down (`ByteCodec`), including strings —
 via code points rather than UTF-8, since Lean's core proves no round-trip for
 `String.fromUTF8?` and using it would have added a trusted law.
 
+The node's durable state lives in that B-tree — one root-to-leaf path per changed
+key, rather than a rewrite of the log and the state machine for every append —
+and `BTree.batch_commit` proves a whole batch of keys commits atomically and
+crash-safely, which is what a durable state that is more than one key needs.
+
 Everything is `sorry`-free on Lean's three standard axioms. See
 **[PROOFS.md](PROOFS.md)** for the full inventory, the trusted base, and what is
-deliberately *not* proved (liveness, exactly-once client retries).
+deliberately *not* proved (liveness, a bound on the session table).
 
 ## Run a 3-node cluster
 
@@ -116,6 +151,15 @@ curl -s -X PUT --data-binary 'hello raft' localhost:9100/kv/greeting
 curl -s localhost:9100/kv/greeting          # -> hello raft
 curl -s -X DELETE localhost:9100/kv/greeting
 curl -s localhost:9101/kv/greeting          # -> 503, "not leader; try node 0"
+```
+
+A client that retries sends the same request id, and the write happens once:
+
+```bash
+curl -s -X DELETE 'localhost:9100/kv/k?rid=100'
+curl -s -X PUT --data-binary v 'localhost:9100/kv/k?rid=101'
+curl -s -X DELETE 'localhost:9100/kv/k?rid=100'   # the retry
+curl -s localhost:9100/kv/k                       # -> v, not "not found"
 ```
 
 Kill the leader and the cluster elects a new one, retaining committed data. Kill
@@ -169,7 +213,7 @@ RaftKV/
     Codec.lean           token encoding, round-trip proved
     Frame.lean           framing (trusted, tested)
     Network.lean         World / Step / Reachable + safety statements
-  Proof/                 31 modules, ~12.8k lines:
+  Proof/                 31 modules, ~14.5k lines:
                          quorum intersection, terms, votes, election safety,
                          log matching, change attribution, leader completeness,
                          state machine safety, state-machine refinement,
@@ -178,16 +222,18 @@ RaftKV/
     Disk.lean            the device: torn writes, three durability levels, one atomic cell
     Persist.lean         copy-on-write commit, proved crash-safe
     Bytes.lean           ByteCodec, round-trip proved down to String
-    NodePersist.lean     the bridge from the store to the model's crash rule
+    NodePersist.lean     the bridge from the two-region store to the crash rule
     Crc32.lean           CRC-32, checked against the standard vectors
     BTree.lean           copy-on-write B-tree with checksummed pages
     BTreeProof.lean      P1-P3: allocation, no overwriting, framing, crash safety
-    BTreeContents.lean   P4: search, scan, insert and delete against the contents
+    BTreeContents.lean   P4 and batches: search, scan, one commit for many keys
+    NodeTree.lean        a node's durable state as tree contents, and its crash rule
   Runtime/
     Sim.lean             deterministic in-process cluster simulator
     Posix.lean           FFI: open/pread/pwrite/fsync/close (trusted)
-    Store.lean           the durable store on a real filesystem (trusted)
+    Store.lean           the two-region store on a real filesystem (trusted)
     PageFile.lean        the B-tree on a real file (trusted)
+    NodeDb.lean          a node's durable state in that B-tree (trusted)
     Server.lean          the I/O shim (trusted)
 c/raftkv_io.c            the C shim behind Posix.lean
 ```

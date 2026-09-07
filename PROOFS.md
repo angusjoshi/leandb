@@ -15,9 +15,11 @@ X
 
 **Status: all four of Raft's safety properties are proved, the store is proved
 linearizable** (`Proof.linearizable`), and both hold in a model that includes
-**node crashes** and **log compaction** — with the durable implementation proved
-crash-safe on a device that tears writes (`Disk.Format.commit_crash_safe`). See
-below.
+**node crashes**, **log compaction** and **snapshot transfer** — with the durable
+implementation, a copy-on-write B-tree, proved crash-safe on a device that tears
+writes. Linearizability now covers **retried requests**: the specification
+suppresses duplicates, so a client that retries has its write carried out
+exactly once. See below.
 
 ## Proved
 
@@ -341,7 +343,7 @@ point, which the runtime ignores.
 | `Proof.applyLoop_reply` | **Every reply the apply loop emits is the sequential specification's answer** for the command at its index, run on the commands below it |
 | `Proof.step_reply` | ...and therefore so is every reply a step emits, at an index that is committed |
 | `Proof.lInv_reachable` (`CreatedTime`, `CommitsTime`, `CommitTimeIsCommit`, `CreateInvoke`, `CommitCreate`, `RespondCommitted`) | Entries and commits are stamped; **nothing is minted that a client did not ask for at that very moment**; **nothing is committed before it was minted**; and every response is the specification's answer at a commit that had already happened |
-| **`Proof.realtime`** | **A request answered before another was submitted is ordered before it.** If `nB ≤ nA` then `ridB`'s entry was already committed at `nB` when `ridA` was answered — committed indices are downward closed and `committed_unique` fixes an index's entry for ever — so `ridB` was minted, hence submitted, before that, contradicting distinct request ids |
+| **`Proof.realtime`** | **A request answered before another was submitted is ordered before it.** If `nB ≤ nA` then `ridB`'s entry was already committed at `nB` when `ridA` was answered — committed indices are downward closed and `committed_unique` fixes an index's entry for ever — so `ridB` was minted, hence submitted, before that, contradicting `tB` being its *first* submission |
 | `Proof.logEntries`, `logEntries_full`, `logEntries_take`, `logEntries_cmds`, `maxCommit_ge` | The committed log as a concrete `List Entry`, and the commit record that reaches furthest |
 | **`Proof.linearizable`** | **Linearizability** |
 
@@ -349,34 +351,103 @@ Statement, as machine-checked:
 
 ```lean
 theorem linearizable {members : List Nat} {w : World σ κ}
-    (hnd : members.Nodup) (hrch : Reachable members w) (hfresh : Protocol.FreshIds w) :
+    (hnd : members.Nodup) (hrch : Reachable members w) :
     ∃ L : List Entry,
       -- 1. every answer is the sequential specification's answer, at its place in `L`
       (∀ t rid n r, Protocol.Answered w t rid n r →
           ∃ e, L[n - 1]? = some e ∧ e.reqId = rid
-            ∧ r = (Spec.applyCmd (Spec.run ((L.take (n - 1)).map Entry.cmd)) e.cmd).2)
+            ∧ r = (Spec.applyEntry (Spec.runE (L.take (n - 1))) e).2)
       -- 2. `L` never contradicts real time
       ∧ (∀ tA ridA nA rA tB ridB tB' nB rB,
           Protocol.Answered w tA ridA nA rA →
-          Protocol.Submitted w tB ridB →
+          Protocol.FirstSubmitted w tB ridB →
           Protocol.Answered w tB' ridB nB rB →
           tA < tB → nA < nB)
       -- 3. every replica has executed a prefix of `L`
-      ∧ (∀ i, LawfulKVStore.toModel (w.nodes i).kv
-            = Spec.run ((L.take (w.nodes i).lastApplied).map Entry.cmd))
+      ∧ (∀ i, (⟨LawfulKVStore.toModel (w.nodes i).kv,
+              fun q => (w.nodes i).sessions.contains q⟩ : Spec.KVModel)
+            = Spec.runE (L.take (w.nodes i).lastApplied))
 ```
 
-`Submitted`, `Answered` and `FreshIds` are defined next to the other safety
+`Submitted`, `Answered` and `FirstSubmitted` are defined next to the other safety
 statements in `RaftKV/Protocol/Network.lean`, so the statement can be read
 without reading any proof.
+
+**There is no freshness assumption.** `Spec.applyEntry` is the specification
+*with duplicate suppression*, so the theorem covers a client that retries: the
+retried entry may commit a second time, and the specification says that second
+commit does nothing and answers `ok`, which is what the replicas do. Clause 2
+asks for the request's *first* submission rather than its only one — the
+operation happens once, at the commit that first submission led to, and a later
+retry cannot move it.
 
 **Scope, stated honestly.** The claim is about operations that received a
 `reply`. A request refused with `notLeader` is an *incomplete* operation: its
 entry may or may not have been appended, and may or may not commit later.
 Linearizability places no constraint on incomplete operations, and this theorem
-places none either — which is exactly why request ids exist and why a client
-must retry with the same id. `FreshIds` is the client's half of the contract:
-one id per operation.
+places none either — which is why request ids exist and why a client must retry
+with the same id. Reusing an id for a *different* operation is the one thing a
+client must not do: the store would take the second for a retry of the first.
+
+## Exactly once
+
+A client that is refused with `notLeader`, or whose reply is lost, retries with
+the same request id. Its command can then commit **twice**, under two indices, and
+be applied twice — which for a repeated `put` is harmless and for this is not:
+
+```
+  rid 1:  del k        commits
+  rid 2:  put k "v"    commits
+  rid 1:  del k        retried, commits a second time
+```
+
+Without suppression the second `del` takes effect and `rid 2`'s write is silently
+gone. The store used to be in exactly that position, and `linearizable` said
+nothing about it: it assumed `FreshIds` — one submission per request id — so a
+retry put the run outside the theorem.
+
+**The specification does the suppressing.** `Spec.applyEntry` takes a log *entry*
+rather than a command, so it sees the request id, and the abstract state is the
+map together with the set of write requests already performed:
+
+```lean
+def applyEntry (m : KVModel) (e : Entry) : KVModel × Reply :=
+  if isWrite e.cmd && m.seen e.reqId then (m, .ok)
+  else
+    let (m', r) := applyCmd m.map e.cmd
+    (⟨m', fun q => m.seen q || (isWrite e.cmd && q == e.reqId)⟩, r)
+```
+
+Reads are deliberately *not* suppressed. A retried read has no effect to repeat;
+it is a second operation, correctly ordered where it lands, and answering it from
+a cache would make it stale. Writes are, and a suppressed write is told `ok`,
+which is the only answer a write ever has.
+
+| Theorem | Statement |
+|---|---|
+| `Proof.applyOne_refines` | A replica applying one entry tracks `Spec.applyEntry` — including the suppressed case, where neither the map nor the table moves |
+| `Proof.applyLoop_reply` | Every reply the apply loop emits is `Spec.applyEntry`'s answer at that index |
+| **`Proof.linearizable`** | ...and the theorem no longer assumes `FreshIds` |
+
+Replicas carry the table as `NodeState.sessions`, snapshotted alongside the state
+machine and shipped with `InstallSnapshot`, so it survives compaction, a restart
+and a snapshot transfer. It is unbounded — a real system would bound it per
+client session, and this does not.
+
+`Test/Dedup.lean` builds the interleaving above by hand and prints what happens:
+four applied entries for three request ids, and a read afterwards that says
+`"v"`. Run through a specification *without* suppression the same log says the
+key is gone. The randomised sweeps issue retries too, and 44 of 300 schedules
+commit a write twice, with 0 safety failures.
+
+Live, on a real cluster:
+
+```bash
+curl -X DELETE 'localhost:9500/kv/k?rid=100'
+curl -X PUT --data-binary v 'localhost:9500/kv/k?rid=101'
+curl -X DELETE 'localhost:9500/kv/k?rid=100'   # the retry
+curl 'localhost:9500/kv/k'                     # -> v
+```
 
 ## Crashes and the device
 
@@ -498,13 +569,14 @@ and what it comes back with is always one of the states the model allows.
    `Node.dispatch` discharges it in one place.
 3. **That the operating system's `fsync` reaches stable storage.** On macOS the
    FFI shim asks for `F_FULLFSYNC` first, which bypasses the drive's write cache.
-4. **The log fits in a region.** The two-region format used by the node store is
-   capacity-bounded. Log compaction (below) bounds what has to fit — the live
-   window rather than all of history — but it does not remove the bound. The
-   copy-on-write B-tree lifts it properly; it is implemented and tested but not
-   yet the node store's format.
+4. **The shim's batch realises the change it is given.** The node store is now
+   the copy-on-write B-tree, whose commit is proved atomic and crash-safe for a
+   whole batch of keys (`BTree.batch_commit`, `NodeTree.crash_recovers_node`);
+   which keys a durable change touches is computed by `NodeDb.delta`, and that it
+   computes the right ones is trusted and tested. The two-region format's
+   capacity bound is gone with it.
 
-### The copy-on-write B-tree
+### The copy-on-write B-tree — now the node store
 
 `RaftKV/Storage/BTree.lean` is the store the two-region format cannot be: it
 commits by writing only the pages it changed, so an append costs a root-to-leaf
@@ -512,6 +584,11 @@ path rather than the whole image. `RaftKV/Runtime/PageFile.lean` puts it on a
 real file, with the same commit sequence the theorem above is about — write the
 new pages, `fsync`, write the root cell, `rename` it into place, `fsync` the
 directory.
+
+**It is what a node's durable state now lives in.** The two-region store rewrote
+the entire image — the whole log and the whole state-machine snapshot — for one
+appended entry. Measured: an append to a 400-entry log allocates **4 pages**, and
+that number does not grow with the log.
 
 It follows the same discipline the proof requires, and by construction rather
 than by invariant:
@@ -546,6 +623,18 @@ written down in `RaftKV/Storage/BTreeProof.lean` and
 | **P2** | Nothing reachable from the live root is overwritten — the `fresh` law, immediate from P1 and the reader's refusal to follow a pointer at or above the mark | `insert_crash_safe` |
 | **P3** | Reads through a root cell depend only on the pages below its mark — the `frame` law | `lookup_frame`, `toList_frame` |
 | **P4** | Search agrees with the contents: `lookup` returns what was inserted, insert and delete change the contents by exactly one binding, the scan comes out in key order | `lookup_correct`, `insert_correct`, `erase_correct` |
+
+**And for a whole batch.** A node's durable state is several keys, and they have
+to move together or not at all, so P1–P4 are composed over a fold:
+
+| Theorem | Statement |
+|---|---|
+| `batch_grows` | Allocation stays monotone across a batch, and no page is written twice — which is what makes the shim's pending map sound |
+| `batch_wf` | Each insert adds at most one level, so a batch of `n` adds at most `n`; the search fuel has to be carried explicitly |
+| `lookupList_applyOps_last` | What a batch does to one key: the last operation naming it is the one that stands |
+| **`batch_commit`** | **One commit, however many keys it touched.** The new root cell reads back the contents the batch produces; whatever the crash did, the old root cell reads back the old contents unchanged |
+| `NodeTree.viewOf_injective` | The key layout determines the node state, so a tree that reads back as one state cannot have come from another |
+| **`NodeTree.crash_recovers_node`** | The same statement `Disk.crash_recovers_node` makes for the two-region store, for the tree |
 
 Composed, they are **`insert_commit`** and **`erase_commit`**: one commit, and
 the new root cell reads back the map with the binding added or removed — every
@@ -658,7 +747,7 @@ class LawfulLogStore (σ) [LogStore σ] where
 
 This is the change that made the rest affordable. `get` already returned
 `Option Entry`, so a `List (Option Entry)` model leaves *every* `get`-shaped
-lemma in the 12.8k lines of protocol proof with its type and its shape unchanged;
+lemma in the 14.5k lines of protocol proof with its type and its shape unchanged;
 a discarded index simply reads `none`, exactly as an index past the end always
 did. `get_lt_first` and `get_isSome` together say the holes are precisely a
 prefix, which is the only structural fact anything downstream needs.
@@ -745,7 +834,7 @@ This is the reusable part. Any future storage-level operation that changes what
 a node *holds* without changing what it *logically decided* — a segmented log
 dropping a segment, a snapshot install, a truncation of a suffix already known
 dead — is a `Step` rule that leaves `full` alone plus one case of
-`fullBridge_step`. The 12.8k lines above it do not move.
+`fullBridge_step`. The 14.5k lines above it do not move.
 
 ### The durable snapshot
 
@@ -792,46 +881,115 @@ precisely so that the durable format needs no `ByteCodec κ`.
 * `Runtime/Random.lean` gains a compaction event, and the sweeps run it in the
   mix.
 
-### What is not implemented: InstallSnapshot
+## Snapshot transfer
 
-**A follower that has fallen behind a leader which compacted past that
-follower's `nextIndex` cannot be caught up.** The leader's `sendFloor` refuses to
-build a payload it cannot anchor, and there is no `InstallSnapshot` RPC to send
-the state machine instead. The follower stalls until it is restarted from a
-copy, or until the cluster is reconfigured.
+A follower that falls behind a leader which has compacted past its `nextIndex`
+cannot be served from the log: `sendFloor` refuses to build a payload the leader
+cannot anchor. `Msg.installSnapshot` is what the leader sends instead.
 
-This is a **liveness** gap, and safety is unaffected: every theorem above holds
-in this world, because a leader that cannot send is indistinguishable from one
-whose messages are all lost, which the network model already permits. It is
-listed here rather than in "limits of the running system" because it is the one
-place where the model is complete and the protocol is deliberately not.
+### What travels
+
+The index the snapshot covers, the state machine as of it — its bindings *and*
+the write requests it had already carried out — and the **entry at that index**.
+The anchor entry travels because the receiver must be left holding something the
+next `AppendEntries` can be anchored against; without it replication could not
+resume and the leader would ship the same snapshot for ever.
+
+For the same reason `compactTo` cuts at `lastApplied` rather than one past it,
+keeping the snapshotted entry as the window's first: a leader has to be able to
+name the predecessor of its own first live entry. So `firstIndex = snapIndex`
+once anything has been discarded, and `snapIndex` is either `0` or at least `2` —
+the lower bound matters, because at `snapIndex = 1` the window would still start
+at `1` and a payload anchored at the virtual index `0` could overwrite the
+snapshotted entry.
+
+### How the model knows what the receiver got
+
+A follower that installs a snapshot ends up holding a prefix of the **sender's**
+log and a state machine it did not compute. Neither is a function of the
+receiver, so the ghost logical log cannot be advanced by one.
+
+`World.snapLogs` records, at every step at which a node leads, everything a
+snapshot that leader might ship would be about — `(node, term, index, state,
+logical log)`. `snapSource` picks the record the message's anchor identifies, and
+`FullBridge.snapWire` carries the invariant that a snapshot actually on the wire
+always has one. Records are immutable once written, which is what keeps the
+argument out of the circularity a *"the sender still holds it"* formulation would
+land in: that would need the sender's committed prefix to be stable, which needs
+Leader Completeness, which is proved on top of this.
+
+| Theorem | Statement |
+|---|---|
+| `Proof.step_installSnapshot_payload` | What a snapshot on the wire says about its sender: every field read off its state, the anchor taken from its log, and the guard that put it there |
+| `Proof.snapInstall_facts` | What installing one does: the node holds exactly the anchor, its logical log is the sender's recorded log cut at that index, and the two agree |
+| `FullBridge.snapWire`, `slFirst`, `slLeader` | Provenance: every wire snapshot has a record; every record's log is a logical log; every record is also a leader-log record, so everything already proved about those applies |
+| `Proof.fullBridge_reachable` | ...and the bridge still holds in every reachable world |
+
+`Step` gains **no rule**: `deliver` handles snapshots like anything else, because
+the ghost update lives inside the step. The ~35 invariants that never mention the
+logical log are untouched. Five that do gained a clause about records —
+well-formedness, chain links, term bounds, commitment, and the state-machine
+model — each established at the moment the record is written, from the recording
+node's own invariant.
+
+### Two conditions are load-bearing
+
+A snapshot is installed only if it reaches past what the receiver already
+considers committed, **and** only if it covers the receiver's whole log. The
+second is what keeps `AckHold` true: without it a stale snapshot, replayed after
+the follower had caught up, could drop entries the follower had acknowledged, and
+the acknowledgement invariant is then outright false rather than merely hard.
+
+The cost is stated in `snapInstalls`: a follower whose log runs *past* the
+leader's snapshot point but disagrees below it still cannot be served. Such a
+follower holds uncommitted entries from an older term above a committed prefix it
+does not have. Serving it needs the snapshot to replace a prefix while retaining
+the tail, which is a larger change; the common case — a follower that has simply
+fallen behind — is covered.
+
+### Measured
+
+The ordinary randomised mix reaches the state this exists for by accident, 10
+schedules in 300. A profile that drops 30% of one node's inbound traffic so it
+falls far behind reaches it on purpose: **83 of 200 schedules ship a snapshot,
+199 in all, with 0 safety failures.**
 
 ## Not proved
 
 - **Liveness** — deliberately out of scope; Raft guarantees none without timing
   assumptions.
-- **Client-side retry semantics.** A client that retries after a `notLeader`
-  refusal may have its command committed twice, under two indices; the model
-  records both as separate operations. Exactly-once execution would need
-  duplicate suppression keyed on the request id, which is not implemented.
+- **A bound on the session table.** Duplicate suppression is proved, but the set
+  of carried-out request ids grows without limit. A real system bounds it per
+  client session, and expiring an entry brings back the possibility of a retry
+  being executed twice — so the bound is a protocol question, not a detail.
 - **The `IO` code that drives a real file.** The disk model, the commit
   discipline, the encoding and the bridge to the crash rule are all proved; the
   shims that move the bytes (`RaftKV.Runtime.Store`, `RaftKV.Runtime.PageFile`,
   `RaftKV.Posix`) are trusted, and listed as such below.
 - **The B-tree's checksums.** The tree's four properties are proved; the CRC-32
   page checks are tested only, deliberately — see below.
-- **Catching up a follower that a leader has compacted past.** There is no
-  `InstallSnapshot` RPC. Safety is untouched — see "What is not implemented"
-  above — but such a follower makes no further progress.
+- **Catching up a follower whose log runs past the leader's snapshot point but
+  disagrees below it.** `InstallSnapshot` covers a follower that has fallen
+  behind; this one is refused, because accepting it would drop entries the
+  follower had acknowledged and make `AckHold` false. Safety is untouched — such
+  a follower simply makes no further progress. See "Two conditions are
+  load-bearing" above.
+- **That `NodeDb.delta` computes the batch it says it does.** The B-tree's
+  `batch_commit` and `NodeTree.crash_recovers_node` prove the commit is atomic
+  and crash-safe *given* that the batch realises the change; that it does is the
+  shim's obligation, on the same footing as `Runtime.Store` performing exactly
+  `Format.commitOps`, and is tested in `Test/NodeDb.lean`.
 
 ## The proved properties, also tested
 
 Because `step` is pure, randomised schedules with message loss, reordering,
 duplication and concurrent elections are reproducible from a seed
 (`RaftKV/Runtime/Random.lean`, driven by `Test/Random.lean`). The event mix
-includes crashes and **log compaction**. Four properties are checked after every
-run — one leader per term, entries determined by index and term, prefixes
-agreeing below a shared entry, and applied entries never disagreeing.
+includes crashes, **log compaction**, **snapshot transfer** and **client
+retries**. Four properties are checked after every run — one leader per term,
+entries determined by index and term, prefixes agreeing below a shared entry, and
+applied entries never disagreeing — plus the replies against the sequential
+specification.
 
 The prefix check carries the same window guard the theorem does: two nodes are
 required to agree only at indices both still hold. Adding compaction without it
@@ -839,10 +997,11 @@ produced 131/84/33/67 failures across the four sweeps — the check was demandin
 agreement at indices that had been discarded, which is the guarded-invariant
 mistake the proof also had to learn, showing up in the simulator first.
 
-Result: **0 failures** across 710 schedules — 300 × 400 steps on 3 nodes,
-200 × 800 on 5 nodes, 60 × 1200 on 3 nodes, and 150 × 600 on 4 nodes. The sweep
-is not vacuous: 87/100 3-node runs end with an elected leader, and a
-deliberately false check is caught 299 times out of 300.
+Result: **0 failures** across 910 schedules — 300 × 400 steps on 3 nodes,
+200 × 800 on 5 nodes, 60 × 1200 on 3 nodes, 150 × 600 on 4 nodes, and 200 × 600
+on the snapshot-forcing profile. The sweeps are not vacuous: 83 of those 200
+schedules ship a snapshot (199 in all), 44 of 300 commit a write twice under one
+request id, and a deliberately false check is caught 254 times out of 300.
 
 `Test/Sim.lean` additionally runs a 3-node cluster in-process and prints the
 replies it produced — `[(1, ok), (2, value (some "v1")), (3, ok), (4, value
@@ -887,11 +1046,12 @@ real `fsync`s at both commit points. Killing all three nodes of a cluster and
 restarting them recovers term, vote and log; committed keys read back, and a
 committed *deletion* stays deleted. One limit remains:
 
-* **The whole image is rewritten on every durable change**, since the two-region
-  format is a full-image copy-on-write. That is O(live window) per append —
-  compaction bounds it, which it did not before, but it is still linear in
-  something that should be constant. The copy-on-write B-tree is built and
-  tested; making it the node store's format is the next step.
-* **No `InstallSnapshot`.** A follower that falls far enough behind a leader that
-  has compacted past it stops making progress. Safety holds; that follower does
-  not catch up.
+* **A compaction rewrites the whole state-machine snapshot.** `KVStore.toPairs`
+  of a hash map has no stable order, so there is nothing to diff against —
+  O(state) once per 1024 applied entries rather than O(state) per operation,
+  which is the improvement the B-tree store bought, but not zero. Making it free
+  means the state machine itself living in that tree, with a compaction retaining
+  the old root rather than copying anything; that needs the tree to take `String`
+  keys.
+* **A follower with a longer, divergent log is still stuck**, as above.
+* **The session table is unbounded.**
