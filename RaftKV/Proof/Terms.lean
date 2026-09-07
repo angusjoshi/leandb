@@ -149,7 +149,7 @@ theorem handleAppendEntriesResp_term_eq (s : NodeState σ κ)
 
 /-- The snapshot handler, too, leaves the term at `max`. -/
 theorem handleInstallSnapshot_term_eq (s : NodeState σ κ)
-    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String)) :
+    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String) × List Nat) :
     (handleInstallSnapshot s term leaderId lastIdx a ps).1.currentTerm
       = max s.currentTerm term := by
   rw [handleInstallSnapshot]
@@ -164,7 +164,7 @@ theorem handleInstallSnapshot_term_eq (s : NodeState σ κ)
 does. Both are leader contact, and the attribution argument needs both to count.
 -/
 theorem handleInstallSnapshot_votedFor_ne (s : NodeState σ κ)
-    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String))
+    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String) × List Nat)
     (h : s.currentTerm ≤ term) :
     (handleInstallSnapshot s term leaderId lastIdx a ps).1.votedFor ≠ none := by
   rw [handleInstallSnapshot, if_neg (by omega)]

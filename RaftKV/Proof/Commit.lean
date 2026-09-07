@@ -848,7 +848,7 @@ theorem step_commit_advance {s : NodeState σ κ} {ev : Event}
     (Protocol.step s ev).1.role = Role.leader
       ∨ (∃ (src term l pi pt : Nat) (es : List Entry) (lc : Nat),
           ev = Event.recv src (Msg.appendEntries term l pi pt es lc))
-      ∨ (∃ (src term lid lastIdx : Nat) (anchor : Entry) (pairs : List (String × String)),
+      ∨ (∃ (src term lid lastIdx : Nat) (anchor : Entry) (pairs : List (String × String) × List Nat),
           ev = Event.recv src (Msg.installSnapshot term lid lastIdx anchor pairs)
             ∧ Protocol.snapInstalls s term lastIdx anchor = true) := by
   cases ev with

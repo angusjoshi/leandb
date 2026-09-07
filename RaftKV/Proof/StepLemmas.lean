@@ -124,6 +124,23 @@ theorem applyCommitted_lastApplied_ge (s : NodeState σ κ) :
 @[simp] theorem applyCommitted_snapIndex (s : NodeState σ κ) :
     (applyCommitted s).1.snapIndex = s.snapIndex := applyLoop_snapIndex _ _ _
 
+@[simp] theorem applyOne_snapSessions (s : NodeState σ κ) :
+    (applyOne s).1.snapSessions = s.snapSessions := by
+  rw [applyOne]; split <;> rfl
+
+@[simp] theorem applyLoop_snapSessions (f : Nat) (s : NodeState σ κ) (acc : List Action) :
+    (applyLoop f s acc).1.snapSessions = s.snapSessions := by
+  induction f generalizing s acc with
+  | zero => rfl
+  | succ n ih =>
+      rw [applyLoop]
+      split
+      · rw [ih]; exact applyOne_snapSessions s
+      · rfl
+
+@[simp] theorem applyCommitted_snapSessions (s : NodeState σ κ) :
+    (applyCommitted s).1.snapSessions = s.snapSessions := applyLoop_snapSessions _ _ _
+
 @[simp] theorem applyCommitted_commitIndex (s : NodeState σ κ) :
     (applyCommitted s).1.commitIndex = s.commitIndex := by
   simp [applyCommitted]
@@ -304,14 +321,14 @@ theorem applyCommitted_applied_le (s : NodeState σ κ) (h : s.lastApplied ≤ s
 
 /-- A stale snapshot changes nothing at all. -/
 theorem handleInstallSnapshot_stale (s : NodeState σ κ)
-    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String))
+    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String) × List Nat)
     (h : term < s.currentTerm) :
     handleInstallSnapshot s term leaderId lastIdx a ps = (s, []) := by
   rw [handleInstallSnapshot, if_pos h]
 
 /-- Any other snapshot leaves the receiver a follower — it is leader contact. -/
 theorem handleInstallSnapshot_follower (s : NodeState σ κ)
-    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String))
+    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String) × List Nat)
     (h : ¬ (term < s.currentTerm)) :
     (handleInstallSnapshot s term leaderId lastIdx a ps).1.role = Role.follower := by
   rw [handleInstallSnapshot, if_neg h]
@@ -320,7 +337,7 @@ theorem handleInstallSnapshot_follower (s : NodeState σ κ)
 
 /-- A snapshot that is not installed leaves the log and the snapshot alone. -/
 theorem handleInstallSnapshot_noop (s : NodeState σ κ)
-    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String))
+    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String) × List Nat)
     (hi : Protocol.snapInstalls s term lastIdx a = false) :
     (handleInstallSnapshot s term leaderId lastIdx a ps).1.log = s.log
       ∧ (handleInstallSnapshot s term leaderId lastIdx a ps).1.snapIndex = s.snapIndex
@@ -341,7 +358,7 @@ theorem handleInstallSnapshot_noop (s : NodeState σ κ)
 
 /-- The snapshot handler never touches the configuration. -/
 @[simp] theorem handleInstallSnapshot_cfg (s : NodeState σ κ)
-    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String)) :
+    (term leaderId lastIdx : Nat) (a : Entry) (ps : List (String × String) × List Nat) :
     (handleInstallSnapshot s term leaderId lastIdx a ps).1.cfg = s.cfg := by
   rw [handleInstallSnapshot]
   split
@@ -468,6 +485,18 @@ theorem step_applied_le (s : NodeState σ κ) (ev : Event) (h : s.lastApplied �
 
 @[simp] theorem advanceCommit_kv (s : NodeState σ κ) : (advanceCommit s).kv = s.kv := by
   rw [advanceCommit]; split <;> rfl
+
+@[simp] theorem stepDown_sessions (s : NodeState σ κ) (t : Nat) (h : Option Nat) :
+    (stepDown s t h).1.sessions = s.sessions := rfl
+
+@[simp] theorem maybeStepDown_sessions (s : NodeState σ κ) (t : Nat) (h : Option Nat) :
+    (maybeStepDown s t h).1.sessions = s.sessions := by rw [maybeStepDown]; split <;> rfl
+
+@[simp] theorem becomeLeader_sessions (s : NodeState σ κ) :
+    (becomeLeader s).1.sessions = s.sessions := rfl
+
+@[simp] theorem advanceCommit_sessions (s : NodeState σ κ) :
+    (advanceCommit s).sessions = s.sessions := by rw [advanceCommit]; split <;> rfl
 
 
 /--

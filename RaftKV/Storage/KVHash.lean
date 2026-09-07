@@ -31,20 +31,20 @@ instance : KVStore HashKV where
 instance : LawfulKVStore HashKV where
   toModel m := fun k => m.map[k]?
   model_empty := by
-    funext k; simp [KVStore.empty, KVModel.empty]
+    funext k; simp [KVStore.empty, Map.empty]
   model_find := by
     intro m k; rfl
   model_insert := by
     intro m k v
     funext k'
-    simp only [KVStore.insert, KVModel.insert, HashMap.getElem?_insert]
+    simp only [KVStore.insert, Map.insert, HashMap.getElem?_insert]
     by_cases h : k' = k
     · simp [h]
     · simp [h, Ne.symm h]
   model_erase := by
     intro m k
     funext k'
-    simp only [KVStore.erase, KVModel.erase, HashMap.getElem?_erase]
+    simp only [KVStore.erase, Map.erase, HashMap.getElem?_erase]
     by_cases h : k' = k
     · simp [h]
     · simp [h, Ne.symm h]

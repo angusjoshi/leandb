@@ -11,7 +11,7 @@ def sample (t : Nat) (v : Option Nat) (n : Nat) (base : Nat := 0)
   { currentTerm := t, votedFor := v
     log := ⟨base, (List.range n).toArray.map (fun i =>
       { term := i + 1, cmd := .put s!"k{i}" s!"v{i}", reqId := i })⟩
-    snapIndex := base, snapPairs := snap }
+    snapIndex := base, snapPairs := snap, snapSessions := [] }
 
 def check : IO (List Bool) := do
   let dir : System.FilePath := "/tmp/raftkv-store-test"

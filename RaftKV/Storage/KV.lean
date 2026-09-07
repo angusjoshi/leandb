@@ -37,7 +37,7 @@ class KVStore (κ : Type) where
   ofPairs : List (String × String) → κ
 
 /--
-The refinement mapping into the abstract `Spec.KVModel`, plus its laws.
+The refinement mapping into the abstract `Spec.Map`, plus its laws.
 
 `model_find` is the important one: it says the *observable* result of a lookup
 on the implementation agrees with the specification. The other three say the
@@ -45,8 +45,8 @@ implementation's state transitions track the specification's.
 -/
 class LawfulKVStore (κ : Type) [KVStore κ] where
   /-- The abstract contents of the map. Proof-level only. -/
-  toModel : κ → KVModel
-  model_empty : toModel (KVStore.empty : κ) = KVModel.empty
+  toModel : κ → Map
+  model_empty : toModel (KVStore.empty : κ) = Map.empty
   model_find : ∀ (m : κ) (k : String), KVStore.find m k = (toModel m).find k
   model_insert : ∀ (m : κ) (k v : String),
     toModel (KVStore.insert m k v) = (toModel m).insert k v

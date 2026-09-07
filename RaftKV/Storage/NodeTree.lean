@@ -26,9 +26,10 @@ One tree holds everything, with the key space interleaved so nothing collides:
 
 | key | holds |
 |---|---|
-| `0` | the scalars: term, vote, the log's window, the snapshot index |
-| `2 * i`, `i ≥ 1` | the log entry at index `i` |
-| `2 * j + 1` | the `j`-th binding of the state-machine snapshot |
+| `0` | the scalars: term, vote, the log's window, the snapshot index, two counts |
+| `4 * i`, `i ≥ 1` | the log entry at index `i` |
+| `4 * j + 1` | the `j`-th binding of the state-machine snapshot |
+| `4 * j + 3` | the `j`-th request id the snapshot had already carried out |
 
 Index `0` never holds a log entry, so key `0` is free for the header.
 
@@ -52,10 +53,13 @@ open RaftKV Protocol RaftKV.BTree
 def metaKey : Nat := 0
 
 /-- The key holding the log entry at index `i`. -/
-def logKey (i : Nat) : Nat := 2 * i
+def logKey (i : Nat) : Nat := 4 * i
 
 /-- The key holding the `j`-th snapshot binding. -/
-def snapKey (j : Nat) : Nat := 2 * j + 1
+def snapKey (j : Nat) : Nat := 4 * j + 1
+
+/-- The key holding the `j`-th request id the snapshot had already carried out. -/
+def sessKey (j : Nat) : Nat := 4 * j + 3
 
 /-- The scalars, and enough shape to read the rest back. -/
 structure Meta where
@@ -71,6 +75,8 @@ structure Meta where
   snapIndex : Nat
   /-- How many bindings the snapshot has. -/
   snapCount : Nat
+  /-- How many requests the snapshot had already carried out. -/
+  sessCount : Nat
   deriving Repr, DecidableEq, Inhabited
 
 /--
@@ -84,7 +90,7 @@ correspondence `RaftKV.Runtime.Store` already relies on.
 def encMeta (m : Meta) : List UInt8 :=
   ByteCodec.enc m.currentTerm ++ ByteCodec.enc m.votedFor.isSome
     ++ ByteCodec.enc (m.votedFor.getD 0) ++ ByteCodec.enc m.base ++ ByteCodec.enc m.size
-    ++ ByteCodec.enc m.snapIndex ++ ByteCodec.enc m.snapCount
+    ++ ByteCodec.enc m.snapIndex ++ ByteCodec.enc m.snapCount ++ ByteCodec.enc m.sessCount
 
 def decMeta (bs : List UInt8) : Option Meta := do
   let (t, r) ← (ByteCodec.dec bs : Option (Nat × List UInt8))
@@ -93,15 +99,17 @@ def decMeta (bs : List UInt8) : Option Meta := do
   let (base, r) ← (ByteCodec.dec r : Option (Nat × List UInt8))
   let (size, r) ← (ByteCodec.dec r : Option (Nat × List UInt8))
   let (snapIndex, r) ← (ByteCodec.dec r : Option (Nat × List UInt8))
-  let (snapCount, _) ← (ByteCodec.dec r : Option (Nat × List UInt8))
+  let (snapCount, r) ← (ByteCodec.dec r : Option (Nat × List UInt8))
+  let (sessCount, _) ← (ByteCodec.dec r : Option (Nat × List UInt8))
   some { currentTerm := t, votedFor := if hasVote then some vote else none,
-         base, size, snapIndex, snapCount }
+         base, size, snapIndex, snapCount, sessCount }
 
 /-- The header a durable state implies. -/
 def metaOf (p : Persistent ArrayLog) : Meta :=
   { currentTerm := p.currentTerm, votedFor := p.votedFor,
     base := p.log.base, size := p.log.base + p.log.entries.size,
-    snapIndex := p.snapIndex, snapCount := p.snapPairs.length }
+    snapIndex := p.snapIndex, snapCount := p.snapPairs.length,
+    sessCount := p.snapSessions.length }
 
 /-- The entry a durable log holds at index `i`, if it still holds one. -/
 def entryAt (lg : ArrayLog) (i : Nat) : Option Entry :=
@@ -109,16 +117,18 @@ def entryAt (lg : ArrayLog) (i : Nat) : Option Entry :=
 
 /-- The header round-trips. -/
 theorem decMeta_encMeta (m : Meta) : decMeta (encMeta m) = some m := by
-  obtain ⟨t, vf, base, size, si, sc⟩ := m
-  have hass : ∀ (a b c d e f g : List UInt8),
-      a ++ b ++ c ++ d ++ e ++ f ++ g = a ++ (b ++ (c ++ (d ++ (e ++ (f ++ g))))) := by
-    intro a b c d e f g; simp [List.append_assoc]
+  obtain ⟨t, vf, base, size, si, sc, xc⟩ := m
+  have hass : ∀ (a b c d e f g h : List UInt8),
+      a ++ b ++ c ++ d ++ e ++ f ++ g ++ h
+        = a ++ (b ++ (c ++ (d ++ (e ++ (f ++ (g ++ h)))))) := by
+    intro a b c d e f g h; simp [List.append_assoc]
   unfold encMeta decMeta
   cases vf with
   | none =>
       simp only [Option.isSome, Option.getD, hass]
       rw [ByteCodec.dec_enc]
       simp only [bind, Option.bind]
+      rw [ByteCodec.dec_enc]; simp only
       rw [ByteCodec.dec_enc]; simp only
       rw [ByteCodec.dec_enc]; simp only
       rw [ByteCodec.dec_enc]; simp only
@@ -135,14 +145,18 @@ theorem decMeta_encMeta (m : Meta) : decMeta (encMeta m) = some m := by
       rw [ByteCodec.dec_enc]; simp only
       rw [ByteCodec.dec_enc]; simp only
       rw [ByteCodec.dec_enc]; simp only
+      rw [ByteCodec.dec_enc]; simp only
       rw [ByteCodec.dec_enc_nil]
       simp
 
 /-- The bytes a durable state puts at each key. -/
 def viewOf (p : Persistent ArrayLog) : Nat → Option (List UInt8) := fun k =>
   if k = 0 then some (encMeta (metaOf p))
-  else if k % 2 = 0 then (entryAt p.log (k / 2)).map ByteCodec.enc
-  else (p.snapPairs[(k - 1) / 2]?).map (fun kv => ByteCodec.enc kv.1 ++ ByteCodec.enc kv.2)
+  else if k % 4 = 0 then (entryAt p.log (k / 4)).map ByteCodec.enc
+  else if k % 4 = 1 then
+    (p.snapPairs[(k - 1) / 4]?).map (fun kv => ByteCodec.enc kv.1 ++ ByteCodec.enc kv.2)
+  else if k % 4 = 3 then (p.snapSessions[(k - 3) / 4]?).map ByteCodec.enc
+  else none
 
 /-! ## The layout determines the state -/
 
@@ -177,10 +191,10 @@ theorem viewOf_injective {p q : Persistent ArrayLog} (h : viewOf p = viewOf q) :
     have hlen : p.log.entries.size = q.log.entries.size := by omega
     refine Array.ext hlen ?_
     intro i hi hi'
-    have := congrFun h (2 * (p.log.base + i + 1))
+    have := congrFun h (4 * (p.log.base + i + 1))
     unfold viewOf at this
     rw [if_neg (by omega), if_pos (by omega), if_neg (by omega), if_pos (by omega)] at this
-    have hdiv : 2 * (p.log.base + i + 1) / 2 = p.log.base + i + 1 := by omega
+    have hdiv : 4 * (p.log.base + i + 1) / 4 = p.log.base + i + 1 := by omega
     rw [hdiv] at this
     unfold entryAt at this
     rw [if_neg (by omega), if_neg (by omega)] at this
@@ -195,10 +209,11 @@ theorem viewOf_injective {p q : Persistent ArrayLog} (h : viewOf p = viewOf q) :
   have hsnap : p.snapPairs = q.snapPairs := by
     refine List.ext_getElem hcount ?_
     intro j hj hj'
-    have := congrFun h (2 * j + 1)
+    have := congrFun h (4 * j + 1)
     unfold viewOf at this
-    rw [if_neg (by omega), if_neg (by omega), if_neg (by omega), if_neg (by omega)] at this
-    have hdiv : (2 * j + 1 - 1) / 2 = j := by omega
+    rw [if_neg (by omega), if_neg (by omega), if_pos (by omega), if_neg (by omega),
+      if_neg (by omega), if_pos (by omega)] at this
+    have hdiv : (4 * j + 1 - 1) / 4 = j := by omega
     rw [hdiv] at this
     rw [List.getElem?_eq_getElem hj, List.getElem?_eq_getElem hj'] at this
     simp only [Option.map_some] at this
@@ -211,13 +226,27 @@ theorem viewOf_injective {p q : Persistent ArrayLog} (h : viewOf p = viewOf q) :
       (Prod.mk.inj (Option.some.inj h1)).2
     have := ByteCodec.enc_injective hv
     exact Prod.ext hk.symm this.symm
-  obtain ⟨t1, v1, ⟨b1, e1⟩, s1, ps1⟩ := p
-  obtain ⟨t2, v2, ⟨b2, e2⟩, s2, ps2⟩ := q
-  simp only at hbase hent hsnap
+  -- and the session table the snapshot carried
+  have hsess : p.snapSessions = q.snapSessions := by
+    have hsc : p.snapSessions.length = q.snapSessions.length := congrArg Meta.sessCount hm
+    refine List.ext_getElem hsc ?_
+    intro j hj hj'
+    have := congrFun h (4 * j + 3)
+    unfold viewOf at this
+    rw [if_neg (by omega), if_neg (by omega), if_neg (by omega), if_pos (by omega),
+      if_neg (by omega), if_neg (by omega), if_neg (by omega), if_pos (by omega)] at this
+    have hdiv : (4 * j + 3 - 3) / 4 = j := by omega
+    rw [hdiv] at this
+    rw [List.getElem?_eq_getElem hj, List.getElem?_eq_getElem hj'] at this
+    simp only [Option.map_some] at this
+    exact ByteCodec.enc_injective (Option.some.inj this)
+  obtain ⟨t1, v1, ⟨b1, e1⟩, s1, ps1, ss1⟩ := p
+  obtain ⟨t2, v2, ⟨b2, e2⟩, s2, ps2, ss2⟩ := q
+  simp only at hbase hent hsnap hsess
   have ht : t1 = t2 := congrArg Meta.currentTerm hm
   have hv : v1 = v2 := congrArg Meta.votedFor hm
   have hs : s1 = s2 := congrArg Meta.snapIndex hm
-  subst ht; subst hv; subst hs; subst hbase; subst hent; subst hsnap
+  subst ht; subst hv; subst hs; subst hbase; subst hent; subst hsnap; subst hsess
   rfl
 
 /-! ## Crash safety, end to end

@@ -41,6 +41,8 @@ def initState (cfg : Config) : NodeState σ κ where
   kv := KVStore.empty
   snapIndex := 0
   snapKV := KVStore.empty
+  sessions := []
+  snapSessions := []
   pending := []
   leaderHint := none
 
@@ -68,11 +70,13 @@ structure Persistent (σ : Type) where
   snapIndex : Nat
   /-- The state machine as of that index, as bindings. -/
   snapPairs : List (String × String)
+  /-- The requests it had already carried out. -/
+  snapSessions : List Nat
   deriving Repr, DecidableEq
 
 /-- The part of a node's state that must outlive a crash. -/
 def persistOf (s : NodeState σ κ) : Persistent σ :=
-  ⟨s.currentTerm, s.votedFor, s.log, s.snapIndex, KVStore.toPairs s.snapKV⟩
+  ⟨s.currentTerm, s.votedFor, s.log, s.snapIndex, KVStore.toPairs s.snapKV, s.snapSessions⟩
 
 /--
 Rebuild a node from its configuration and whatever the device gave back.
@@ -86,6 +90,7 @@ def recoverNode (cfg : Config) (p : Persistent σ) : NodeState σ κ :=
       currentTerm := p.currentTerm, votedFor := p.votedFor, log := p.log,
       snapIndex := p.snapIndex, snapKV := KVStore.ofPairs p.snapPairs,
       kv := KVStore.ofPairs p.snapPairs,
+      snapSessions := p.snapSessions, sessions := p.snapSessions,
       lastApplied := p.snapIndex, commitIndex := p.snapIndex }
 
 def restart (s : NodeState σ κ) : NodeState σ κ := recoverNode s.cfg (persistOf s)
@@ -111,7 +116,7 @@ def compactTo (s : NodeState σ κ) : NodeState σ κ :=
   if 2 ≤ s.lastApplied ∧ LogStore.firstIndex s.log ≤ s.lastApplied
       ∧ s.lastApplied ≤ LogStore.lastIndex s.log then
     { s with log := LogStore.compact s.log s.lastApplied,
-             snapIndex := s.lastApplied, snapKV := s.kv }
+             snapIndex := s.lastApplied, snapKV := s.kv, snapSessions := s.sessions }
   else s
 
 /-- **Restarting is exactly recovering from the durable projection.** -/
@@ -173,9 +178,16 @@ def applyOne (s : NodeState σ κ) : NodeState σ κ × List Action :=
   match LogStore.get s.log i with
   | none => (s, [])
   | some e =>
-    let (kv', r) := KVStore.applyCmd s.kv e.cmd
+    -- **Exactly once.** A write whose request this replica has already carried
+    -- out is not carried out again; the client is told `ok`, which is the only
+    -- answer a write ever has. Reads are always executed: a retried read is a
+    -- second operation, not a duplicate.
+    let dup := Spec.isWrite e.cmd && s.sessions.contains e.reqId
+    let (kv', r) := if dup then (s.kv, Reply.ok) else KVStore.applyCmd s.kv e.cmd
+    let sess := if Spec.isWrite e.cmd && !s.sessions.contains e.reqId then
+        e.reqId :: s.sessions else s.sessions
     let acts := if s.pending.any (fun p => p.1 == i) then [Action.reply i e.reqId r] else []
-    ({ s with kv := kv', lastApplied := i,
+    ({ s with kv := kv', sessions := sess, lastApplied := i,
               pending := s.pending.filter (fun p => p.1 != i) }, acts)
 
 /-- Apply committed-but-unapplied entries, bounded by explicit fuel. -/
@@ -212,7 +224,7 @@ this never has to reconstruct anything.
 -/
 def snapshotMsg (s : NodeState σ κ) : Msg :=
   .installSnapshot s.currentTerm s.cfg.me s.snapIndex
-    ((LogStore.get s.log s.snapIndex).getD default) (KVStore.toPairs s.snapKV)
+    ((LogStore.get s.log s.snapIndex).getD default) (KVStore.toPairs s.snapKV, s.snapSessions)
 
 /--
 What a leader sends a follower whose last `AppendEntries` was rejected: the
@@ -367,8 +379,8 @@ which is what keeps the change-attribution argument's witness term strictly
 below the term of any vote the node goes on to cast.
 -/
 def handleInstallSnapshot (s : NodeState σ κ)
-    (term leaderId lastIdx : Nat) (anchor : Entry) (pairs : List (String × String)) :
-    NodeState σ κ × List Action :=
+    (term leaderId lastIdx : Nat) (anchor : Entry)
+    (pairs : List (String × String) × List Nat) : NodeState σ κ × List Action :=
   if term < s.currentTerm then
     (s, [])
   else
@@ -376,9 +388,10 @@ def handleInstallSnapshot (s : NodeState σ κ)
     let vf := some (sd.1.votedFor.getD leaderId)
     let s' := { sd.1 with role := .follower, leaderHint := some leaderId, votedFor := vf }
     if snapInstalls s term lastIdx anchor then
-      let kv' := KVStore.ofPairs pairs
+      let kv' := KVStore.ofPairs pairs.1
       ({ s' with log := LogStore.fromAnchor lastIdx anchor,
                  snapIndex := lastIdx, snapKV := kv', kv := kv',
+                 snapSessions := pairs.2, sessions := pairs.2,
                  lastApplied := lastIdx, commitIndex := lastIdx }, sd.2)
     else
       (s', sd.2)

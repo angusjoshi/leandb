@@ -57,16 +57,22 @@ def tick (crash : World → Nat → World) (n : Nat) (rid : Nat) (w : World) (se
   else if choice < 92 then
     (w.fire node .heartbeatTimeout, s)
   else if choice < 96 then
-    -- a mixed workload: reads and deletes as well as writes, so that a reply
-    -- actually depends on the state and `repliesMatchSpec` has something to say
-    let key := s!"k{rid % 3}"
+    -- A workload built to make duplicate suppression matter. Within a window
+    -- the same three request ids come round again and again — so most requests
+    -- are **retries** — and two of them write the same key. The dangerous
+    -- interleaving is exactly this: `del k` commits, then someone else's
+    -- `put k v` commits, then the retried `del k` commits. Without suppression
+    -- that second `del` takes effect and the value is wrong.
+    let base := rid / 60
+    let slot := (rid / 10) % 3
+    let cid := 3 * base + slot
+    let key := s!"k{base % 3}"
     let cmd : Command :=
-      match rid % 4 with
-      | 0 => .put key s!"v{rid}"
-      | 1 => .put key s!"v{rid}"
-      | 2 => .get key
-      | _ => .del key
-    (w.fire node (.clientReq rid cmd), s)
+      match slot with
+      | 0 => .del key
+      | 1 => .put key s!"v{base}"
+      | _ => .get key
+    (w.fire node (.clientReq cid cmd), s)
   else if choice < 98 then
     -- compact a node's log, throwing away what its snapshot now covers
     (w.compactNode node, s)
@@ -274,9 +280,9 @@ def specReplyAt (w : World) (idx : Nat) : Option Reply :=
   | some e =>
       let m := (List.range (idx - 1)).foldl (fun m d =>
         match canonEntry w (d + 1) with
-        | some e' => (Spec.applyCmd m e'.cmd).1
+        | some e' => (Spec.applyEntry m e').1
         | none => m) Spec.KVModel.empty
-      some (Spec.applyCmd m e.cmd).2
+      some (Spec.applyEntry m e).2
 
 /--
 **Linearizability, clause one.** Every reply the cluster ever sent is what the

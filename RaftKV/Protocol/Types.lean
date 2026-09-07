@@ -71,12 +71,14 @@ inductive Msg where
   Leader ships its snapshot to a follower it can no longer serve from the log.
 
   `lastIncluded` is the index the snapshot covers, `anchor` is the entry *at*
-  that index, and `pairs` is the state machine as of it. The anchor travels
-  because the receiver must be left holding something the next `AppendEntries`
-  can be anchored against; without it, replication could not resume.
+  that index, and `snap` is the state machine as of it — its bindings together
+  with the write requests it had already carried out, which the receiver needs
+  in order to keep suppressing duplicates. The anchor travels because the
+  receiver must be left holding something the next `AppendEntries` can be
+  anchored against; without it, replication could not resume.
   -/
   | installSnapshot (term leaderId lastIncluded : Nat) (anchor : Entry)
-      (pairs : List (String × String))
+      (snap : List (String × String) × List Nat)
   deriving Repr, DecidableEq, Inhabited
 
 namespace Msg
@@ -187,6 +189,19 @@ structure NodeState (σ κ : Type) where
   effect of every command in that prefix.
   -/
   snapKV : κ
+  /--
+  Write requests this replica has already carried out.
+
+  Part of the replicated state machine, not bookkeeping: a client that retries
+  after a refusal or a lost reply sends the same request id again, and its
+  command can commit twice, under two indices. Without this the second one would
+  be applied — harmless for a `put`, wrong for a `del` with someone else's `put`
+  in between. Reads are not recorded: re-executing a retried read at the retry is
+  a second operation, correctly ordered where it lands, not a duplicate.
+  -/
+  sessions : List Nat
+  /-- The session table as of `snapIndex`, durable alongside `snapKV`. -/
+  snapSessions : List Nat
   /-- Client requests awaiting commit, as `(logIndex, reqId)`. Leader only. -/
   pending : List (Nat × Nat)
   /-- Last known leader, used to redirect clients. -/

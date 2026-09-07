@@ -245,7 +245,7 @@ There is one emission site — the back-off path of `handleAppendEntriesResp`,
 which is guarded by leadership exactly as the replication sites are.
 -/
 theorem step_installSnapshot_leader {s : NodeState σ κ} {ev : Event}
-    {to t l li : Nat} {a : Entry} {ps : List (String × String)}
+    {to t l li : Nat} {a : Entry} {ps : List (String × String) × List Nat}
     (h : Action.send to (Msg.installSnapshot t l li a ps) ∈ (Protocol.step s ev).2) :
     (Protocol.step s ev).1.role = Role.leader ∧ (Protocol.step s ev).1.currentTerm = t := by
   cases ev with
@@ -334,15 +334,16 @@ gives the last conjunct, and with it the fact that the anchor index is inside
 the sender's window.
 -/
 theorem step_installSnapshot_payload {s : NodeState σ κ} {ev : Event}
-    {to t l li : Nat} {a : Entry} {ps : List (String × String)}
+    {to t l li : Nat} {a : Entry} {ps : List (String × String) × List Nat}
     (h : Action.send to (Msg.installSnapshot t l li a ps) ∈ (Protocol.step s ev).2) :
     t = s.currentTerm ∧ li = s.snapIndex
       ∧ a = (LogStore.get s.log s.snapIndex).getD default
-      ∧ ps = KVStore.toPairs s.snapKV
+      ∧ ps = (KVStore.toPairs s.snapKV, s.snapSessions)
       ∧ LogStore.firstIndex s.log ≠ 1
       ∧ (Protocol.step s ev).1.log = s.log
       ∧ (Protocol.step s ev).1.snapIndex = s.snapIndex
       ∧ (Protocol.step s ev).1.snapKV = s.snapKV
+      ∧ (Protocol.step s ev).1.snapSessions = s.snapSessions
       ∧ (Protocol.step s ev).1.currentTerm = s.currentTerm
       ∧ ev.isSnapRecv = false
       ∧ ∀ fl : σ, nodeFullStep s fl ev = fl := by
@@ -394,7 +395,7 @@ theorem step_installSnapshot_payload {s : NodeState σ κ} {ev : Event}
                   · have hm := (Action.send.inj h').2
                     rw [snapshotMsg] at hm
                     obtain ⟨h1, _, h3, h4, h5⟩ := Msg.installSnapshot.inj hm
-                    exact ⟨h1, h3, h4, h5, hcond.1, rfl, rfl, rfl, rfl, rfl, fun _ => rfl⟩
+                    exact ⟨h1, h3, h4, h5, hcond.1, rfl, rfl, rfl, rfl, rfl, rfl, fun _ => rfl⟩
                   · rcases List.mem_singleton.mp h' with h''
                     exact absurd (Action.send.inj h'').2 (by simp [appendEntriesTo])
                 · rcases List.mem_singleton.mp h with h''
@@ -530,7 +531,7 @@ def AEFromWinner (members : List Nat) (w : World σ κ) : Prop :=
 
 /-- A snapshot on the wire, likewise, was sent by the winner of its term. -/
 def SnapFromWinner (members : List Nat) (w : World σ κ) : Prop :=
-  ∀ src dst t l li (a : Entry) (ps : List (String × String)),
+  ∀ src dst t l li (a : Entry) (ps : List (String × String) × List Nat),
     (src, dst, Msg.installSnapshot t l li a ps) ∈ w.sent → WonTerm members w src t
 
 /-- Provenance invariants, maintained together. -/

@@ -378,7 +378,8 @@ instance : ByteCodec ArrayLog where
     rw [dec_enc s.entries.toList rest]
 
 instance {σ : Type} [ByteCodec σ] : ByteCodec (Protocol.Persistent σ) where
-  enc p := enc p.currentTerm ++ enc p.votedFor ++ enc p.log ++ enc p.snapIndex ++ enc p.snapPairs
+  enc p := enc p.currentTerm ++ enc p.votedFor ++ enc p.log ++ enc p.snapIndex
+    ++ enc p.snapPairs ++ enc p.snapSessions
   dec bs :=
     match (dec bs : Option (Nat × List UInt8)) with
     | none => none
@@ -394,11 +395,14 @@ instance {σ : Type} [ByteCodec σ] : ByteCodec (Protocol.Persistent σ) where
                 | some (si, r3) =>
                     match (dec r3 : Option (List (String × String) × List UInt8)) with
                     | none => none
-                    | some (sk, r4) => some (⟨t, v, lg, si, sk⟩, r4)
+                    | some (sk, r4) =>
+                        match (dec r4 : Option (List Nat × List UInt8)) with
+                        | none => none
+                        | some (ss, r5) => some (⟨t, v, lg, si, sk, ss⟩, r5)
   dec_enc := by
     intro p rest
     show (match (dec ((enc p.currentTerm ++ enc p.votedFor ++ enc p.log ++ enc p.snapIndex
-        ++ enc p.snapPairs) ++ rest) : Option (Nat × List UInt8)) with
+        ++ enc p.snapPairs ++ enc p.snapSessions) ++ rest) : Option (Nat × List UInt8)) with
       | none => none | some (t, r) => _) = _
     simp only [List.append_assoc]
     rw [dec_enc p.currentTerm _]
@@ -409,7 +413,9 @@ instance {σ : Type} [ByteCodec σ] : ByteCodec (Protocol.Persistent σ) where
     dsimp only
     rw [dec_enc p.snapIndex _]
     dsimp only
-    rw [dec_enc p.snapPairs rest]
+    rw [dec_enc p.snapPairs _]
+    dsimp only
+    rw [dec_enc p.snapSessions rest]
 
 end ByteCodec
 

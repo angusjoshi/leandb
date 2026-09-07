@@ -90,7 +90,7 @@ theorem maybeStepDown_no_send {s : NodeState σ κ} {t : Nat} {hint : Option Nat
 
 /-- The snapshot handler sends nothing at all: it only acknowledges by acting. -/
 theorem handleInstallSnapshot_no_send {s : NodeState σ κ}
-    {term leaderId lastIdx : Nat} {a : Entry} {ps : List (String × String)}
+    {term leaderId lastIdx : Nat} {a : Entry} {ps : List (String × String) × List Nat}
     {to : Nat} {m : Msg} :
     Action.send to m ∉ (handleInstallSnapshot s term leaderId lastIdx a ps).2 := by
   rw [handleInstallSnapshot]

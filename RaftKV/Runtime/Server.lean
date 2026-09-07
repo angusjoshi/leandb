@@ -119,9 +119,19 @@ def Node.dispatch (nd : Node) (ev : Event) : Async Unit := do
   for a in acts do
     nd.exec a
 
-/-- Submit a client command and wait for it to commit, or be redirected. -/
-def Node.submit (nd : Node) (cmd : Command) : Async Outcome := do
-  let rid ← nd.nextReq.modifyGet (fun n => (n, n + 1))
+/--
+Submit a client command and wait for it to commit, or be redirected.
+
+`rid` is the client's request id when it supplied one. A client that retries
+after a refusal or a lost reply should send the same id again: the replicated
+state machine remembers the writes it has already carried out and will not carry
+one out twice. Without an id every attempt is a fresh operation, and a retried
+write can take effect more than once.
+-/
+def Node.submit (nd : Node) (cmd : Command) (rid? : Option Nat := none) : Async Outcome := do
+  let rid ← match rid? with
+    | some r => pure r
+    | none => nd.nextReq.modifyGet (fun n => (n, n + 1))
   let ch ← Channel.new (capacity := some 1)
   nd.waiters.atomically (modify (·.insert rid ch))
   nd.dispatch (.clientReq rid cmd)
@@ -215,22 +225,34 @@ def respond (o : Outcome) : Async (Response Body.Full) :=
 def pathSegments (r : Request.Head) : List String :=
   (toString (r.uri.path)).splitOn "/" |>.filter (· != "")
 
+/--
+The client's request id, if it supplied one.
+
+`/kv/<key>?rid=<n>`. A retry carries the id of the attempt it is retrying, which
+is what lets the store answer it exactly once.
+-/
+def requestId (r : Request.Head) : Option Nat :=
+  match (toString r.uri.query).splitOn "rid=" with
+  | _ :: rest :: _ => (rest.takeWhile Char.isDigit).toNat?
+  | _ => none
+
 /-- The client-facing HTTP handler. -/
 def Node.httpHandler (nd : Node) : Server.StatelessHandler :=
   Server.Handler.ofFn fun req => do
     let segs := pathSegments req.line
+    let rid? := requestId req.line
     match req.line.method, segs with
     | .get, ["status"] => do
         let s ← nd.st.atomically (do pure (← get))
         Response.ok.text
           s!"node={s.cfg.me} role={repr s.role} term={s.currentTerm} commit={s.commitIndex} applied={s.lastApplied}\n"
-    | .get, ["kv", k] => do respond (← nd.submit (.get k))
-    | .delete, ["kv", k] => do respond (← nd.submit (.del k))
+    | .get, ["kv", k] => do respond (← nd.submit (.get k) rid?)
+    | .delete, ["kv", k] => do respond (← nd.submit (.del k) rid?)
     | .put, ["kv", k] => do
         let body : ByteArray ← Body.Stream.readAll req.body
         match String.fromUTF8? body with
         | none => Response.badRequest.text "body is not valid UTF-8\n"
-        | some v => do respond (← nd.submit (.put k v.trimAscii.toString))
+        | some v => do respond (← nd.submit (.put k v.trimAscii.toString) rid?)
     | _, _ => Response.notFound.text "usage: GET|PUT|DELETE /kv/<key>, GET /status\n"
 
 /-- Build a replica. -/

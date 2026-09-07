@@ -215,7 +215,7 @@ theorem leader_stable {members : List Nat} {w w' : World σ κ} [LawfulLogStore 
     have hwin : WonTerm members w src t := hp.aeWinner src i t l pi pt es lc hmem
     have hself : i = src := leader_is_unique_winner hnd hr hl hteq.symm hwin
     exact hp.notSelf (src, i, Msg.appendEntries t l pi pt es lc) hmem (by simp [hself])
-  have hnos : ∀ src t l li (a : Entry) (ps : List (String × String)),
+  have hnos : ∀ src t l li (a : Entry) (ps : List (String × String) × List Nat),
       (src, i, Msg.installSnapshot t l li a ps) ∈ w.sent → t ≠ (w.nodes i).currentTerm := by
     intro src t l li a ps hmem hteq
     have hwin : WonTerm members w src t := hp.snapWinner src i t l li a ps hmem

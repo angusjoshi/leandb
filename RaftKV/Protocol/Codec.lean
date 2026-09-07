@@ -155,6 +155,48 @@ theorem decPairs_encPairs (ps : List (String × String)) (rest : List Token) :
     decPairs (encPairs ps ++ rest) = some (ps, rest) := by
   simpa [encPairs, decPairs] using decPairsN_enc ps rest
 
+/-- Encode a list of request ids, length-prefixed. -/
+def encNats (ns : List Nat) : List Token := .n ns.length :: ns.map Token.n
+
+/-- Decode exactly `n` request ids. -/
+def decNatsN : Nat → List Token → Option (List Nat × List Token)
+  | 0, ts => some ([], ts)
+  | n + 1, .n x :: ts => do
+      let (ns, ts) ← decNatsN n ts
+      some (x :: ns, ts)
+  | _ + 1, _ => none
+
+/-- Decode a length-prefixed request-id list. -/
+def decNats : List Token → Option (List Nat × List Token)
+  | .n n :: ts => decNatsN n ts
+  | _ => none
+
+theorem decNatsN_enc (ns : List Nat) (rest : List Token) :
+    decNatsN ns.length (ns.map Token.n ++ rest) = some (ns, rest) := by
+  induction ns generalizing rest with
+  | nil => rfl
+  | cons n ns ih => simp [decNatsN, ih rest]
+
+theorem decNats_encNats (ns : List Nat) (rest : List Token) :
+    decNats (encNats ns ++ rest) = some (ns, rest) := by
+  simpa [encNats, decNats] using decNatsN_enc ns rest
+
+/-- The snapshot payload: the bindings, then the requests already carried out. -/
+def encSnap (p : List (String × String) × List Nat) : List Token :=
+  encPairs p.1 ++ encNats p.2
+
+def decSnap (ts : List Token) : Option ((List (String × String) × List Nat) × List Token) := do
+  let (ps, ts) ← decPairs ts
+  let (ns, ts) ← decNats ts
+  some ((ps, ns), ts)
+
+theorem decSnap_encSnap (p : List (String × String) × List Nat) (rest : List Token) :
+    decSnap (encSnap p ++ rest) = some (p, rest) := by
+  obtain ⟨ps, ns⟩ := p
+  show decSnap ((encPairs ps ++ encNats ns) ++ rest) = _
+  rw [List.append_assoc]
+  simp [decSnap, decPairs_encPairs ps _, decNats_encNats ns rest]
+
 /-! ## Messages -/
 
 namespace Msg
@@ -167,7 +209,7 @@ def enc : Msg → List Token
       [.n 2, .n t, .n l, .n pi, .n pt, .n lc] ++ encEntries es
   | .appendEntriesResp t s mi => [.n 3, .n t, .n (if s then 1 else 0), .n mi]
   | .installSnapshot t l li a ps =>
-      [.n 4, .n t, .n l, .n li] ++ Entry.enc a ++ encPairs ps
+      [.n 4, .n t, .n l, .n li] ++ Entry.enc a ++ encSnap ps
 
 /-- Token decoding of a protocol message. -/
 def dec : List Token → Option (Msg × List Token)
@@ -179,7 +221,7 @@ def dec : List Token → Option (Msg × List Token)
   | .n 3 :: .n t :: .n s :: .n mi :: rest => some (.appendEntriesResp t (s != 0) mi, rest)
   | .n 4 :: .n t :: .n l :: .n li :: rest => do
       let (a, rest) ← Entry.dec rest
-      let (ps, rest) ← decPairs rest
+      let (ps, rest) ← decSnap rest
       some (.installSnapshot t l li a ps, rest)
   | _ => none
 
@@ -196,11 +238,11 @@ instance : Codec Msg where
         simp [dec, decEntries_encEntries es rest]
     | appendEntriesResp t s mi => cases s <;> rfl
     | installSnapshot t l li a ps =>
-        have hA : Entry.dec (Entry.enc a ++ (encPairs ps ++ rest))
-            = some (a, encPairs ps ++ rest) := Codec.decode_encode (α := Entry) a _
+        have hA : Entry.dec (Entry.enc a ++ (encSnap ps ++ rest))
+            = some (a, encSnap ps ++ rest) := Codec.decode_encode (α := Entry) a _
         show dec (enc (.installSnapshot t l li a ps) ++ rest) = _
         simp only [enc, List.cons_append, List.nil_append, List.append_assoc]
-        simp [dec, hA, decPairs_encPairs ps rest]
+        simp [dec, hA, decSnap_encSnap ps rest]
 
 end Msg
 

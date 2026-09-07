@@ -188,7 +188,7 @@ theorem world_full_step (w : World σ κ) (i : Nat) (ev : Event) :
           ev = Event.recv src (Msg.appendEntries term l pi pt es lc)
           ∧ Protocol.aeAccepts (w.nodes i) term pi pt = true
           ∧ fullStep w i ev = appendFrom (w.full i) (pi + 1) es)
-      ∨ (∃ (src term lid lastIdx : Nat) (anchor : Entry) (pairs : List (String × String)),
+      ∨ (∃ (src term lid lastIdx : Nat) (anchor : Entry) (pairs : List (String × String) × List Nat),
           ev = Event.recv src (Msg.installSnapshot term lid lastIdx anchor pairs)
           ∧ Protocol.snapInstalls (w.nodes i) term lastIdx anchor = true
           ∧ (w.nodes i).currentTerm ≤ term) := by
@@ -323,7 +323,7 @@ structure FullBridge (w : World σ κ) : Prop where
   established at the moment the snapshot is sent — the sender is a leader, so it
   records — and both lists only grow, so it is never lost.
   -/
-  snapWire : ∀ src dst term lid lastIdx (anchor : Entry) (pairs : List (String × String)),
+  snapWire : ∀ src dst term lid lastIdx (anchor : Entry) (pairs : List (String × String) × List Nat),
     (src, dst, Msg.installSnapshot term lid lastIdx anchor pairs) ∈ w.sent →
     ∃ lg : σ, (src, term, lastIdx, pairs, lg) ∈ w.snapLogs
       ∧ LogStore.get lg lastIdx = some anchor
@@ -352,7 +352,7 @@ at the index the snapshot covers; its logical log becomes the sender's recorded
 log cut there; and the two agree.
 -/
 theorem snapInstall_facts {w : World σ κ} {j src term lid lastIdx : Nat} {anchor : Entry}
-    {pairs : List (String × String)}
+    {pairs : List (String × String) × List Nat}
     (h : FullBridge w)
     (hmem : (src, j, Msg.installSnapshot term lid lastIdx anchor pairs) ∈ w.sent)
     (hi : Protocol.snapInstalls (w.nodes j) term lastIdx anchor = true) :
@@ -660,7 +660,7 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
         have hm0 : m0 = Msg.installSnapshot c d e f g := by
           have := congrArg (fun q => q.2.2) heq; simpa using this.symm
         subst hm0; subst h1
-        obtain ⟨ht, hli, hanc, hps, hfne, hlog, hsi, hskv, hct, hns, hnf⟩ :=
+        obtain ⟨ht, hli, hanc, hps, hfne, hlog, hsi, hskv, hss, hct, hns, hnf⟩ :=
           step_installSnapshot_payload hact
         -- the anchor is the sender's own entry, which its logical log holds
         have hf2 := h.snapFirst a
@@ -679,7 +679,7 @@ theorem fullBridge_step {members : List Nat} {w w' : World σ κ}
           rw [snapLogOf, if_pos ?_]
           · rw [ht, hli, hps]
             refine List.mem_singleton.mpr ?_
-            rw [hct, hsi, hskv]
+            rw [hct, hsi, hskv, hss]
           · exact (step_installSnapshot_leader hact).1
         · have hfl : fullStep w a ev = w.full a := by
             rw [fullStep_node w a ev hns]; exact hnf (w.full a)

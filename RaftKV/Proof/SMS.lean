@@ -322,7 +322,7 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
           · rw [handleAppendEntries_commit, if_neg hacc, fullStep_node _ _ _ (by simp [Event.isSnapRecv]), nodeFullStep, if_neg hacc]
             exact h.bound i
         · by_cases hsnap : ∃ (src term lid lastIdx : Nat) (anchor : Entry)
-              (pairs : List (String × String)),
+              (pairs : List (String × String) × List Nat),
               ev = Event.recv src (Msg.installSnapshot term lid lastIdx anchor pairs)
                 ∧ Protocol.snapInstalls (w.nodes i) term lastIdx anchor = true
           · -- an installed snapshot: the commit index lands exactly at its end
@@ -435,7 +435,7 @@ theorem sInv_step {members : List Nat} {w w' : World σ κ}
             have := handleAppendEntries_term (w.nodes i) src term l pi pt es lc
             omega
         · by_cases hsnap : ∃ (src term lid lastIdx : Nat) (anchor : Entry)
-              (pairs : List (String × String)),
+              (pairs : List (String × String) × List Nat),
               ev = Event.recv src (Msg.installSnapshot term lid lastIdx anchor pairs)
                 ∧ Protocol.snapInstalls (w.nodes i) term lastIdx anchor = true
           · -- an installed snapshot: the sender's record carries the evidence

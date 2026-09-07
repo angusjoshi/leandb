@@ -88,7 +88,7 @@ whose log and commit index are the step's own, and whose key/value state and
 theorem reply_from_applyCommitted {s : NodeState σ κ} {ev : Event} {n rid : Nat} {r : Reply}
     (h : Action.reply n rid r ∈ (Protocol.step s ev).2) :
     ∃ s₀ : NodeState σ κ, (Protocol.step s ev).1 = (applyCommitted s₀).1
-      ∧ s₀.kv = s.kv ∧ s₀.lastApplied = s.lastApplied
+      ∧ s₀.kv = s.kv ∧ s₀.lastApplied = s.lastApplied ∧ s₀.sessions = s.sessions
       ∧ Action.reply n rid r ∈ (applyCommitted s₀).2
       ∧ ev.isSnapRecv = false := by
   cases ev with
@@ -146,7 +146,7 @@ theorem reply_from_applyCommitted {s : NodeState σ κ} {ev : Event} {n rid : Na
             · rename_i hc
               rw [if_neg hc]
               dsimp only
-              refine ⟨_, rfl, by simp, by simp, ?_, rfl⟩
+              refine ⟨_, rfl, by simp, by simp, by simp, ?_, rfl⟩
               rcases List.mem_append.mp h with h' | h'
               · exact absurd h' maybeStepDown_no_reply
               · rcases List.mem_cons.mp h' with hq | hq
@@ -166,7 +166,7 @@ theorem reply_from_applyCommitted {s : NodeState σ κ} {ev : Event} {n rid : Na
               · rename_i h3
                 rw [if_pos h3]
                 dsimp only
-                exact ⟨_, rfl, by simp, by simp, h, rfl⟩
+                exact ⟨_, rfl, by simp, by simp, by simp, h, rfl⟩
               · exact absurd h (fun hq => retryTo_reply hq)
   | clientReq rid' cmd =>
       rw [Protocol.step, handleClientReq] at h ⊢
@@ -175,7 +175,7 @@ theorem reply_from_applyCommitted {s : NodeState σ κ} {ev : Event} {n rid : Na
       · rename_i hg
         rw [if_neg hg]
         dsimp only at h ⊢
-        refine ⟨_, rfl, by simp, by simp, ?_, rfl⟩
+        refine ⟨_, rfl, by simp, by simp, by simp, ?_, rfl⟩
         rcases List.mem_append.mp h with h' | h'
         · exact absurd h' broadcastAppend_no_reply
         · exact h'
@@ -211,7 +211,7 @@ theorem applyLoop_reply (fl : σ) (f : Nat) (s : NodeState σ κ) (acc : List Ac
     Action.reply n rid r ∈ acc
       ∨ (∃ e, LogStore.get fl n = some e ∧ e.reqId = rid
           ∧ 1 ≤ n ∧ n ≤ s.commitIndex
-          ∧ r = (Spec.applyCmd (Spec.run (cmdsUpTo fl (n - 1))) e.cmd).2) := by
+          ∧ r = (Spec.applyEntry (Spec.runE (cmdsUpTo fl (n - 1))) e).2) := by
   induction f generalizing s acc with
   | zero => rw [applyLoop] at h; exact Or.inl h
   | succ f ih =>
@@ -235,24 +235,25 @@ theorem applyLoop_reply (fl : σ) (f : Nat) (s : NodeState σ κ) (acc : List Ac
             | none => intro hz; simp at hz
             | some e =>
                 dsimp only
-                cases hkv : KVStore.applyCmd s.kv e.cmd with
-                | mk kv' rep =>
-                    dsimp only
-                    split
-                    · intro hz
-                      have hz' := List.mem_singleton.mp hz
-                      have h1 : n = s.lastApplied + 1 := (Action.reply.inj hz').1
-                      have h2 : rid = e.reqId := (Action.reply.inj hz').2.1
-                      have h3 : r = rep := (Action.reply.inj hz').2.2
-                      refine ⟨e, by rw [h1, ← hbr _ hfa]; exact hq, h2.symm, by omega,
-                        by omega, ?_⟩
-                      have hrep : rep = (Spec.applyCmd (LawfulKVStore.toModel s.kv) e.cmd).2 := by
-                        have := KVStore.applyCmd_reply s.kv e.cmd
-                        rw [hkv] at this; exact this
-                      unfold AppliedModel at hmod
-                      rw [h3, hrep, hmod, h1]
-                      simp
-                    · intro hz; simp at hz
+                split
+                · intro hz
+                  have hz' := List.mem_singleton.mp hz
+                  have h1 : n = s.lastApplied + 1 := (Action.reply.inj hz').1
+                  have h2 : rid = e.reqId := (Action.reply.inj hz').2.1
+                  have h3 : r = (if (Spec.isWrite e.cmd && s.sessions.contains e.reqId) = true
+                      then (s.kv, Reply.ok) else KVStore.applyCmd s.kv e.cmd).2 :=
+                    (Action.reply.inj hz').2.2
+                  refine ⟨e, by rw [h1, ← hbr _ hfa]; exact hq, h2.symm, by omega,
+                    by omega, ?_⟩
+                  unfold AppliedModel at hmod
+                  rw [h3, h1]
+                  simp only [Nat.add_sub_cancel, ← hmod]
+                  unfold Spec.applyEntry
+                  by_cases hdup : (Spec.isWrite e.cmd && s.sessions.contains e.reqId) = true
+                  · rw [if_pos hdup, if_pos hdup]
+                  · rw [if_neg hdup, if_neg hdup]
+                    exact (KVStore.applyCmd_reply s.kv e.cmd)
+                · intro hz; simp at hz
         · right
           obtain ⟨e, he1, he2, he3, he4, he5⟩ := h'
           have hci : (applyOne s).1.commitIndex = s.commitIndex := applyOne_commitIndex s
@@ -267,7 +268,7 @@ theorem applyCommitted_reply (fl : σ) (s : NodeState σ κ)
     {n rid : Nat} {r : Reply} (h : Action.reply n rid r ∈ (applyCommitted s).2) :
     ∃ e, LogStore.get fl n = some e ∧ e.reqId = rid
       ∧ 1 ≤ n ∧ n ≤ s.commitIndex
-      ∧ r = (Spec.applyCmd (Spec.run (cmdsUpTo fl (n - 1))) e.cmd).2 := by
+      ∧ r = (Spec.applyEntry (Spec.runE (cmdsUpTo fl (n - 1))) e).2 := by
   rcases applyLoop_reply fl _ s [] hbr hfa hmod h with h' | h'
   · simp at h'
   · exact h'
@@ -283,13 +284,13 @@ theorem step_reply (fl : σ) (s : NodeState σ κ) (ev : Event)
     {n rid : Nat} {r : Reply} (h : Action.reply n rid r ∈ (Protocol.step s ev).2) :
     ∃ e, LogStore.get fl n = some e ∧ e.reqId = rid
       ∧ 1 ≤ n ∧ n ≤ (Protocol.step s ev).1.commitIndex
-      ∧ r = (Spec.applyCmd (Spec.run (cmdsUpTo fl (n - 1))) e.cmd).2 := by
-  obtain ⟨s₀, hpost, hkv, hla, hmem, hsr⟩ := reply_from_applyCommitted h
+      ∧ r = (Spec.applyEntry (Spec.runE (cmdsUpTo fl (n - 1))) e).2 := by
+  obtain ⟨s₀, hpost, hkv, hla, hse, hmem, hsr⟩ := reply_from_applyCommitted h
   have hlog : (Protocol.step s ev).1.log = s₀.log := by rw [hpost]; simp
   have hci : (Protocol.step s ev).1.commitIndex = s₀.commitIndex := by rw [hpost]; simp
   have hmod : AppliedModel fl s₀ := by
     unfold AppliedModel at hpre ⊢
-    rw [hkv, hla]
+    rw [hkv, hla, hse]
     exact hpre
   obtain ⟨e, h1, h2, h3, h4, h5⟩ := applyCommitted_reply fl s₀
     (fun k hk => by rw [← hlog] at hk ⊢; exact hbr k hk)
@@ -498,7 +499,7 @@ def RespondCommitted (w : World σ κ) : Prop :=
     ∃ (c : Nat) (lg : σ) (t' : Nat) (e : Entry),
       (c, lg, t') ∈ w.commitTime ∧ t' ≤ t ∧ 1 ≤ n ∧ n ≤ c
         ∧ LogStore.get lg n = some e ∧ e.reqId = rid
-        ∧ r = (Spec.applyCmd (Spec.run (cmdsUpTo lg (n - 1))) e.cmd).2
+        ∧ r = (Spec.applyEntry (Spec.runE (cmdsUpTo lg (n - 1))) e).2
 
 /-- The history invariants, carried together. -/
 structure LInv (members : List Nat) (w : World σ κ) : Prop where
@@ -720,14 +721,11 @@ for it, so `ridB` was submitted before `tA`, contradicting distinct request ids.
 -/
 theorem realtime {members : List Nat} {w : World σ κ}
     (hnd : members.Nodup) (hrch : Reachable members w)
-    (huniq : ∀ t₁ i₁ t₂ i₂ rid (cmd₁ cmd₂ : Command),
-        HEvent.invoke t₁ i₁ rid cmd₁ ∈ w.hist →
-        HEvent.invoke t₂ i₂ rid cmd₂ ∈ w.hist → t₁ = t₂)
     {tA iA ridA nA : Nat} {rA : Reply}
-    {tB iB ridB : Nat} {cmdB : Command}
+    {tB ridB : Nat}
     {tB' iB' nB : Nat} {rB : Reply}
+    (hfirst : ∀ t i (cmd : Command), HEvent.invoke t i ridB cmd ∈ w.hist → tB ≤ t)
     (hA : HEvent.respond tA iA ridA nA rA ∈ w.hist)
-    (hinvB : HEvent.invoke tB iB ridB cmdB ∈ w.hist)
     (hB : HEvent.respond tB' iB' ridB nB rB ∈ w.hist)
     (hlt : tA < tB) : nA < nB := by
   have linv := lInv_reachable hnd hrch
@@ -747,7 +745,7 @@ theorem realtime {members : List Nat} {w : World σ κ}
     obtain ⟨tc, hc1, hc2⟩ := linv.commitCreate _ _ _ hA1 nB e₀ hB3 (by omega) hg₀
     obtain ⟨i₀, hi₀⟩ := linv.createInvoke _ _ hc1
     rw [hB6] at hi₀
-    have := huniq _ _ _ _ _ _ _ hi₀ hinvB
+    have := hfirst _ _ _ hi₀
     omega
 
 /-! ## The committed log, as a list -/
@@ -756,10 +754,7 @@ theorem realtime {members : List Nat} {w : World σ κ}
 def logEntries (lg : σ) (n : Nat) : List Entry :=
   (List.range n).filterMap (fun k => LogStore.get lg (k + 1))
 
-theorem logEntries_cmds (lg : σ) (n : Nat) :
-    (logEntries lg n).map Entry.cmd = cmdsUpTo lg n := by
-  unfold logEntries cmdsUpTo
-  rw [List.map_filterMap]
+theorem logEntries_cmds (lg : σ) (n : Nat) : logEntries lg n = cmdsUpTo lg n := rfl
 
 /-- With no holes below `n`, the list is exactly the log's first `n` entries. -/
 theorem logEntries_full {lg : σ} : ∀ n : Nat,
@@ -868,8 +863,8 @@ that:
 
 1. **Every answer the cluster ever gave is the answer a single, sequential
    key/value store would have given.** The response to request `rid` at index
-   `n` is what `Spec.applyCmd` returns for `L`'s `n`-th command, run on the
-   state reached by executing the `n - 1` commands before it; and that `n`-th
+   `n` is what `Spec.applyEntry` returns for `L`'s `n`-th entry, run on the
+   state reached by executing the `n - 1` entries before it; and that `n`-th
    entry is the one `rid` submitted.
 
 2. **That order never contradicts real time.** If the cluster answered one
@@ -879,38 +874,39 @@ that:
 3. **Every replica is somewhere along that same order.** Each node's key/value
    state is exactly the sequential specification run on a prefix of `L`.
 
-The only assumption beyond reachability is that clients use distinct request
-ids, which is what makes "the operation for `rid`" well defined.
+`Spec.applyEntry` is the specification *with duplicate suppression*: a write
+whose request it has already carried out is not carried out again. So this now
+covers a client that retries — the retried entry may commit a second time, and
+the specification says the second commit is a no-op answering `ok`, which is what
+the replicas do. The assumption is only that clients use distinct request ids for
+distinct *operations*, which is what makes "the operation for `rid`" well
+defined; a retry is the same operation and reuses its id.
 -/
 theorem linearizable {members : List Nat} {w : World σ κ}
-    (hnd : members.Nodup) (hrch : Reachable members w) (hfresh : Protocol.FreshIds w) :
+    (hnd : members.Nodup) (hrch : Reachable members w) :
     ∃ L : List Entry,
       -- 1. every answer is the sequential specification's answer, at its place in `L`
       (∀ t rid n r, Protocol.Answered w t rid n r →
           ∃ e, L[n - 1]? = some e ∧ e.reqId = rid
-            ∧ r = (Spec.applyCmd (Spec.run ((L.take (n - 1)).map Entry.cmd)) e.cmd).2)
+            ∧ r = (Spec.applyEntry (Spec.runE (L.take (n - 1))) e).2)
       -- 2. `L` never contradicts real time
       ∧ (∀ tA ridA nA (rA : Reply) tB ridB tB' nB (rB : Reply),
           Protocol.Answered w tA ridA nA rA →
-          Protocol.Submitted w tB ridB →
+          Protocol.FirstSubmitted w tB ridB →
           Protocol.Answered w tB' ridB nB rB →
           tA < tB → nA < nB)
       -- 3. every replica has executed a prefix of `L`
-      ∧ (∀ i, LawfulKVStore.toModel (w.nodes i).kv
-            = Spec.run ((L.take (w.nodes i).lastApplied).map Entry.cmd)) := by
+      ∧ (∀ i, (⟨LawfulKVStore.toModel (w.nodes i).kv,
+              fun q => (w.nodes i).sessions.contains q⟩ : Spec.KVModel)
+            = Spec.runE (L.take (w.nodes i).lastApplied)) := by
   have linv := lInv_reachable hnd hrch
-  have huniq : ∀ t₁ i₁ t₂ i₂ rid (cmd₁ cmd₂ : Command),
-      HEvent.invoke t₁ i₁ rid cmd₁ ∈ w.hist →
-      HEvent.invoke t₂ i₂ rid cmd₂ ∈ w.hist → t₁ = t₂ := by
-    intro t₁ i₁ t₂ i₂ rid cmd₁ cmd₂ h1 h2
-    exact hfresh t₁ t₂ rid ⟨i₁, cmd₁, h1⟩ ⟨i₂, cmd₂, h2⟩
   have hrt : ∀ tA ridA nA (rA : Reply) tB ridB tB' nB (rB : Reply),
       Protocol.Answered w tA ridA nA rA →
-      Protocol.Submitted w tB ridB →
+      Protocol.FirstSubmitted w tB ridB →
       Protocol.Answered w tB' ridB nB rB →
       tA < tB → nA < nB := by
-    rintro _ _ _ _ _ _ _ _ _ ⟨iA, hA⟩ ⟨iB, cmdB, hI⟩ ⟨iB', hB⟩ hlt
-    exact realtime hnd hrch huniq hA hI hB hlt
+    rintro _ _ _ _ _ _ _ _ _ ⟨iA, hA⟩ ⟨_, hmin⟩ ⟨iB', hB⟩ hlt
+    exact realtime hnd hrch (fun t i cmd hq => hmin t ⟨i, cmd, hq⟩) hA hB hlt
   cases hmax : maxCommit w.commitTime with
   | none =>
       -- with nothing committed anywhere, nothing has been answered or applied

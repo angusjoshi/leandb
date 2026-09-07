@@ -95,7 +95,17 @@ def delta (before after : Persistent ArrayLog) : List Op :=
               (List.range (before.snapPairs.length - after.snapPairs.length)).map
                 (fun d => (snapKey (after.snapPairs.length + d), none))
             else [])
-  header ++ gone ++ live ++ snap
+  -- and the session table it carried, on the same footing
+  let sess : List Op :=
+    if before.snapSessions == after.snapSessions then []
+    else
+      (after.snapSessions.zipIdx.map (fun (rid, j) =>
+          (sessKey j, some (ByteCodec.enc rid : List UInt8).toByteArray)))
+        ++ (if after.snapSessions.length < before.snapSessions.length then
+              (List.range (before.snapSessions.length - after.snapSessions.length)).map
+                (fun d => (sessKey (after.snapSessions.length + d), none))
+            else [])
+  header ++ gone ++ live ++ snap ++ sess
 
 /-- Publish a durable change: one commit, whatever it touched. -/
 def save (db : Db) (before after : Persistent ArrayLog) : IO Unit :=
@@ -104,7 +114,7 @@ def save (db : Db) (before after : Persistent ArrayLog) : IO Unit :=
 /-- Write a node's durable state from scratch, for a fresh database. -/
 def saveAll (db : Db) (p : Persistent ArrayLog) : IO Unit :=
   save db { currentTerm := 0, votedFor := none, log := LogStore.empty,
-            snapIndex := 0, snapPairs := [] } p
+            snapIndex := 0, snapPairs := [], snapSessions := [] } p
 
 /-- Read a node's durable state back, or `none` if there is not one yet. -/
 def load (db : Db) : IO (Option (Persistent ArrayLog)) := do
@@ -134,8 +144,17 @@ def load (db : Db) : IO (Option (Persistent ArrayLog)) := do
                     match (ByteCodec.dec r : Option (String × List UInt8)) with
                     | none => throw (IO.userError s!"snapshot binding {j} has no value")
                     | some (v, _) => ps := ps ++ [(k, v)]
+          let mut ss : List Nat := []
+          for j in List.range m.sessCount do
+            match ← db.get (sessKey j) with
+            | none => throw (IO.userError s!"snapshot session {j} missing from the page file")
+            | some bs =>
+                match (ByteCodec.dec bs.toList : Option (Nat × List UInt8)) with
+                | none => throw (IO.userError s!"snapshot session {j} does not decode")
+                | some (rid, _) => ss := ss ++ [rid]
           return some { currentTerm := m.currentTerm, votedFor := m.votedFor,
-                        log := ⟨m.base, es⟩, snapIndex := m.snapIndex, snapPairs := ps }
+                        log := ⟨m.base, es⟩, snapIndex := m.snapIndex, snapPairs := ps,
+                        snapSessions := ss }
 
 /-- Restore a node from the page file, or start it fresh. -/
 def loadNode (db : Db) (cfg : Config) : IO (NodeState ArrayLog HashKV) := do

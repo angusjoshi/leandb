@@ -18,7 +18,8 @@ def e (t r : Nat) (k v : String) : Entry := { term := t, cmd := .put k v, reqId 
 /-- Append `n` entries one at a time, each its own durable commit. -/
 def buildLog (db : Db) (n : Nat) : IO (Persistent ArrayLog) := do
   let mut p : Persistent ArrayLog :=
-    { currentTerm := 0, votedFor := none, log := LogStore.empty, snapIndex := 0, snapPairs := [] }
+    { currentTerm := 0, votedFor := none, log := LogStore.empty, snapIndex := 0,
+      snapPairs := [], snapSessions := [] }
   for i in List.range n do
     let p' : Persistent ArrayLog :=
       { p with currentTerm := i / 3 + 1,
@@ -40,7 +41,8 @@ def check : IO (List Bool) := do
   -- compaction: discard a prefix and record a snapshot
   let p2 : Persistent ArrayLog :=
     { p with log := LogStore.compact p.log 20, snapIndex := 20,
-             snapPairs := (List.range 20).map (fun i => (s!"k{i}", s!"v{i}")) }
+             snapPairs := (List.range 20).map (fun i => (s!"k{i}", s!"v{i}")),
+             snapSessions := (List.range 20).map (fun i => i * 2) }
   save db p p2
   let r2 := (← load db) == some p2
   -- a truncating splice: the tail goes

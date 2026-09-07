@@ -89,7 +89,7 @@ structure World (σ κ : Type) where
   record, and it is immutable once written, which is what keeps the argument
   from depending on where the sender has got to since.
   -/
-  snapLogs : List (Nat × Nat × Nat × List (String × String) × σ)
+  snapLogs : List (Nat × Nat × Nat × (List (String × String) × List Nat) × σ)
   /-- Ghost: the number of steps taken so far — the model's clock. -/
   clock : Nat
   /-- Ghost: the client-visible history, in real-time (that is, step) order. -/
@@ -153,7 +153,7 @@ for a snapshot actually on the wire there always is one, so the fallback is
 never taken on a reachable path.
 -/
 noncomputable def snapSource (w : World σ κ) (src term lastIdx : Nat) (anchor : Entry)
-    (pairs : List (String × String)) : σ :=
+    (pairs : List (String × String) × List Nat) : σ :=
   open Classical in
   if h : ∃ lg : σ, (src, term, lastIdx, pairs, lg) ∈ w.snapLogs
       ∧ LogStore.get lg lastIdx = some anchor then h.choose else w.full src
@@ -286,9 +286,9 @@ Recorded at every leading step, exactly as `leaderLogOf` is, so that a snapshot
 put on the wire always has a matching record — see `Proof.snapProvenance`.
 -/
 def snapLogOf (i : Nat) (s : NodeState σ κ) (fl : σ) :
-    List (Nat × Nat × Nat × List (String × String) × σ) :=
+    List (Nat × Nat × Nat × (List (String × String) × List Nat) × σ) :=
   if s.role = Role.leader then
-    [(i, s.currentTerm, s.snapIndex, KVStore.toPairs s.snapKV, fl)]
+    [(i, s.currentTerm, s.snapIndex, (KVStore.toPairs s.snapKV, s.snapSessions), fl)]
   else []
 
 /-- Ghost: the vote node `i` holds in state `s`, if any. -/
@@ -486,6 +486,9 @@ inductive Step (members : List Nat) : World σ κ → World σ κ → Prop where
 @[simp] theorem compactTo_lastApplied (s : NodeState σ κ) :
     (Protocol.compactTo s).lastApplied = s.lastApplied := by
   rw [Protocol.compactTo]; split <;> rfl
+@[simp] theorem compactTo_sessions (s : NodeState σ κ) :
+    (Protocol.compactTo s).sessions = s.sessions := by
+  rw [Protocol.compactTo]; split <;> rfl
 @[simp] theorem compactTo_kv (s : NodeState σ κ) :
     (Protocol.compactTo s).kv = s.kv := by
   rw [Protocol.compactTo]; split <;> rfl
@@ -609,13 +612,15 @@ def Answered (w : World σ κ) (t rid n : Nat) (r : Reply) : Prop :=
   ∃ i, HEvent.respond t i rid n r ∈ w.hist
 
 /--
-Clients never reuse a request id.
+The first time a client submitted request `rid`.
 
-This is the client's side of the contract, and it is what makes "the operation
-for `rid`" a well-defined thing to talk about.
+A client that is refused, or whose reply is lost, retries with the same id, so a
+request can be submitted several times. Real-time order is judged against the
+*first* of them: the operation happens once, at the commit its first submission
+led to, and a later retry cannot move it.
 -/
-def FreshIds (w : World σ κ) : Prop :=
-  ∀ t₁ t₂ rid, Submitted w t₁ rid → Submitted w t₂ rid → t₁ = t₂
+def FirstSubmitted (w : World σ κ) (t rid : Nat) : Prop :=
+  Submitted w t rid ∧ ∀ t', Submitted w t' rid → t ≤ t'
 
 /--
 **State Machine Safety.** Two nodes never apply different entries at the same
