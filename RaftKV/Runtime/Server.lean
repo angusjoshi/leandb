@@ -1,5 +1,5 @@
 import RaftKV.Protocol.Node
-import RaftKV.Runtime.Store
+import RaftKV.Runtime.NodeDb
 import RaftKV.Protocol.Frame
 import RaftKV.Storage.LogArray
 import RaftKV.Storage.KVHash
@@ -50,8 +50,8 @@ structure Node where
   nextReq : IO.Ref Nat
   /-- Set when a leader has been heard from since the last election check. -/
   heard : IO.Ref Bool
-  /-- Where the durable trio lives, if this replica persists at all. -/
-  store : Option (Store.Paths × System.FilePath)
+  /-- Where the durable state lives, if this replica persists at all. -/
+  store : Option PageFile.Db
 
 /-- Hand an outcome to whoever is waiting on `rid`, if anyone still is. -/
 def Node.resolve (nd : Node) (rid : Nat) (o : Outcome) : Async Unit := do
@@ -96,8 +96,10 @@ step's state change and its messages atomic, and only this discipline makes the
 implementation refine it. Losing messages is free — the network model already
 permits it — but a message that outlives the state justifying it is not.
 
-The commit is skipped when the durable trio did not change, which is the common
-case: heartbeats, replies and repeated votes touch none of it.
+The commit is skipped when the durable state did not change, which is the common
+case: heartbeats, replies and repeated votes touch none of it. When it did
+change, only the keys that moved are written — one appended entry is one
+root-to-leaf path, not a rewrite of the log and the state machine.
 -/
 def Node.dispatch (nd : Node) (ev : Event) : Async Unit := do
   let (before, after, acts) ← nd.st.atomically do
@@ -112,7 +114,7 @@ def Node.dispatch (nd : Node) (ev : Event) : Async Unit := do
     set s''
     pure (Protocol.persistOf s, Protocol.persistOf s'', acts)
   match nd.store with
-  | some (paths, dir) => if before != after then Store.commit paths dir after
+  | some db => if before != after then NodeDb.save db before after
   | none => pure ()
   for a in acts do
     nd.exec a
@@ -234,12 +236,15 @@ def Node.httpHandler (nd : Node) : Server.StatelessHandler :=
 /-- Build a replica. -/
 def Node.create (cfg : Config) (peers : List (Nat × Net.SocketAddress))
     (dataDir : Option System.FilePath := none) : IO Node := do
-  let store := dataDir.map (fun d => (Store.Paths.forNode d cfg.me, d))
+  let store ← match dataDir with
+    | none => pure none
+    | some d => do
+        IO.FS.createDirAll d
+        pure (some (← PageFile.open' d s!"node{cfg.me}"))
   let s0 ← match store with
     | none => pure (Protocol.initState (σ := ArrayLog) (κ := HashKV) cfg)
-    | some (paths, dir) => do
-        IO.FS.createDirAll dir
-        let s ← Store.load paths cfg
+    | some db => do
+        let s ← NodeDb.loadNode db cfg
         IO.println s!"[node {cfg.me}] recovered term={s.currentTerm}           votedFor={repr s.votedFor} entries={LogStore.lastIndex s.log}"
         pure s
   let st ← Std.Mutex.new s0

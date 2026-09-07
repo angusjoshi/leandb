@@ -34,6 +34,13 @@ class ByteCodec (α : Type) where
 
 namespace ByteCodec
 
+/-- Distinct values never share an encoding. -/
+theorem enc_injective {α : Type} [ByteCodec α] {a b : α} (h : enc a = enc b) : a = b := by
+  have ha := dec_enc a ([] : List UInt8)
+  have hb := dec_enc b ([] : List UInt8)
+  rw [h, hb] at ha
+  exact (congrArg Prod.fst (Option.some.inj ha)).symm
+
 /-- Round-trip on a complete byte list. -/
 theorem dec_enc_nil {α : Type} [ByteCodec α] (a : α) : dec (enc a) = some (a, []) := by
   have := dec_enc a ([] : List UInt8)

@@ -257,6 +257,45 @@ namespace RaftKV.BTree
 def patch (f : Pages) (ws : List (Nat × Node)) : Pages :=
   ws.foldl (fun g w => fun q => if q = w.1 then some w.2 else g q) f
 
+/-! ## Batches
+
+A durable state that is more than one key has to move all of it at once. The
+operations already compose: each returns the pages it allocated, and the
+allocator only hands out pages at or above the previous high-water mark, so the
+pages one operation writes are exactly what the next should read. `patch` is
+that reading, and a batch is the fold.
+
+Only one root cell is published at the end, so a batch is atomic for free: until
+it moves, the tree on disk is the tree the batch started from.
+-/
+
+/-- One update in a batch: a binding to write, or a key to remove. -/
+abbrev Op := Nat × Option ByteArray
+
+/-- Apply a batch, reading each step through the pages the earlier ones wrote. -/
+def Tree.batch (t : Tree) (pages : Pages) : List Op → Option (Tree × List (Nat × Node))
+  | [] => some (t, [])
+  | (k, some v) :: ops =>
+      match t.insert pages k v with
+      | none => none
+      | some (t₁, ws) =>
+          match t₁.batch (patch pages ws) ops with
+          | none => none
+          | some (t₂, ws') => some (t₂, ws ++ ws')
+  | (k, none) :: ops =>
+      match t.erase pages k with
+      | none => none
+      | some (t₁, ws) =>
+          match t₁.batch (patch pages ws) ops with
+          | none => none
+          | some (t₂, ws') => some (t₂, ws ++ ws')
+
+/-- What a batch does to the contents. -/
+def applyOps (m : List (Nat × ByteArray)) : List Op → List (Nat × ByteArray)
+  | [] => m
+  | (k, some v) :: ops => applyOps (insertRec m k v) ops
+  | (k, none) :: ops => applyOps (eraseRec m k) ops
+
 theorem patch_below {f : Pages} {b : Nat} :
     ∀ (ws : List (Nat × Node)), (∀ w ∈ ws, b ≤ w.1) → ∀ q, q < b → patch f ws q = f q
   | [], _, _, _ => rfl
@@ -397,6 +436,66 @@ theorem eraseAux_extends {t : Tree} {pages : Pages} {k : Nat} :
 
 theorem patch_append (f : Pages) (ws e : List (Nat × Node)) :
     patch f (ws ++ e) = patch (patch f ws) e := List.foldl_append ..
+
+/--
+**P1 for a batch.** The mark only moves forward, every page a batch writes is in
+the range it opened up, and no page is written twice.
+
+The last part is what makes the shim's pending map sound: distinct writes are to
+distinct pages, so accumulating them in a map loses nothing.
+-/
+theorem batch_grows : ∀ (ops : List Op) {t t' : Tree} {pages : Pages}
+    {ws : List (Nat × Node)}, t.batch pages ops = some (t', ws) →
+    t.next ≤ t'.next ∧ (∀ w ∈ ws, t.next ≤ w.1 ∧ w.1 < t'.next) ∧ (ws.map Prod.fst).Nodup
+  | [], t, t', pages, ws, h => by
+      rw [Tree.batch] at h
+      injection h with h; injection h with h1 h2
+      subst h1; subst h2
+      exact ⟨Nat.le_refl _, by simp, by simp⟩
+  | (k, ov) :: ops, t, t', pages, ws, h => by
+      have step : ∃ (t₁ : Tree) (ws₁ ws₂ : List (Nat × Node)),
+          (t.next ≤ t₁.next ∧ (∀ w ∈ ws₁, t.next ≤ w.1 ∧ w.1 < t₁.next)
+            ∧ (ws₁.map Prod.fst).Nodup)
+          ∧ t₁.batch (patch pages ws₁) ops = some (t', ws₂) ∧ ws = ws₁ ++ ws₂ := by
+        cases ov with
+        | some v =>
+            rw [Tree.batch] at h
+            split at h
+            · exact absurd h (by simp)
+            · rename_i t₁ ws₁ hins
+              split at h
+              · exact absurd h (by simp)
+              · rename_i t₂ ws₂ hb
+                injection h with h; injection h with h1 h2
+                subst h1; subst h2
+                exact ⟨t₁, ws₁, ws₂, insert_grows hins, hb, rfl⟩
+        | none =>
+            rw [Tree.batch] at h
+            split at h
+            · exact absurd h (by simp)
+            · rename_i t₁ ws₁ her
+              split at h
+              · exact absurd h (by simp)
+              · rename_i t₂ ws₂ hb
+                injection h with h; injection h with h1 h2
+                subst h1; subst h2
+                exact ⟨t₁, ws₁, ws₂, erase_grows her, hb, rfl⟩
+      obtain ⟨t₁, ws₁, ws₂, ⟨hle₁, hmem₁, hnd₁⟩, hb, heq⟩ := step
+      obtain ⟨hle₂, hmem₂, hnd₂⟩ := batch_grows ops hb
+      subst heq
+      refine ⟨Nat.le_trans hle₁ hle₂, ?_, ?_⟩
+      · intro w hw
+        rcases List.mem_append.mp hw with hw' | hw'
+        · exact ⟨(hmem₁ w hw').1, Nat.lt_of_lt_of_le (hmem₁ w hw').2 hle₂⟩
+        · exact ⟨Nat.le_trans hle₁ (hmem₂ w hw').1, (hmem₂ w hw').2⟩
+      · rw [List.map_append, List.nodup_append]
+        refine ⟨hnd₁, hnd₂, ?_⟩
+        intro a ha b hb' heqab
+        rcases List.mem_map.mp ha with ⟨w, hw, hwa⟩
+        rcases List.mem_map.mp hb' with ⟨w', hw', hwa'⟩
+        have h1 := (hmem₁ w hw).2
+        have h2 := (hmem₂ w' hw').1
+        omega
 
 /-- The image after `a'` agrees with the image after `a` on everything below `a`'s mark. -/
 theorem patch_extends {f : Pages} {a a' : Alloc} (h : Alloc.Extends a a') :

@@ -24,6 +24,14 @@ namespace RaftKV.BTree
 /-- Strictly increasing in key. -/
 def Sorted (m : List (Nat × ByteArray)) : Prop := m.Pairwise (fun a b => a.1 < b.1)
 
+/-- The tail of a sorted list is sorted. -/
+theorem sorted_tail {r : Nat × ByteArray} {rs : List (Nat × ByteArray)}
+    (h : Sorted (r :: rs)) : Sorted rs := (List.pairwise_cons.mp h).2
+
+/-- The head of a sorted list is below every other key. -/
+theorem sorted_head {r : Nat × ByteArray} {rs : List (Nat × ByteArray)}
+    (h : Sorted (r :: rs)) : ∀ q ∈ rs, r.1 < q.1 := (List.pairwise_cons.mp h).1
+
 /-- A lower bound, absent at the left edge of the tree. -/
 def Lo : Option Nat → Nat → Prop
   | none, _ => True
@@ -1162,6 +1170,225 @@ theorem insert_commit {t t' : Tree} {pages : Pages} {m : List (Nat × ByteArray)
   refine ⟨fun k' => lookup_correct hwf', toList_correct hwf', fun g hg ws' hsub => ?_⟩
   obtain ⟨hl, ht⟩ := insert_crash_safe h g hg ws' hsub
   exact ⟨fun k' => (hl k').trans (lookup_correct hold), ht.trans (toList_correct hold)⟩
+
+/-! ## Batches -/
+
+/-- Lookup, one cell at a time. -/
+theorem lookupList_nil (k : Nat) : lookupList [] k = none := rfl
+
+theorem lookupList_cons (k₀ : Nat) (v₀ : ByteArray) (rs : List (Nat × ByteArray)) (k' : Nat) :
+    lookupList ((k₀, v₀) :: rs) k' = if k₀ = k' then some v₀ else lookupList rs k' := by
+  unfold lookupList
+  rw [List.find?_cons]
+  by_cases h : k₀ = k'
+  · subst h; simp
+  · rw [if_neg h]
+    have : (k₀ == k') = false := by simpa using h
+    rw [this]
+
+/-- A key below everything in a sorted list is not in it. -/
+theorem lookupList_of_lt : ∀ {m : List (Nat × ByteArray)} {k : Nat},
+    Sorted m → (∀ q ∈ m, k < q.1) → lookupList m k = none
+  | [], _, _, _ => rfl
+  | (k₀, v₀) :: rs, k, hs, hlt => by
+      rw [lookupList_cons, if_neg (by have := hlt _ (List.mem_cons_self ..); omega)]
+      exact lookupList_of_lt (sorted_tail hs)
+        (fun q hq => hlt q (List.mem_cons_of_mem _ hq))
+
+/-- Inserting changes the lookup at that key and nothing else, on a sorted list. -/
+theorem lookupList_insertRec : ∀ (m : List (Nat × ByteArray)) (k : Nat) (v : ByteArray),
+    Sorted m → ∀ k', lookupList (insertRec m k v) k'
+      = if k' = k then some v else lookupList m k'
+  | [], k, v, _, k' => by
+      rw [insertRec, lookupList_cons, lookupList_nil]
+      by_cases h : k' = k
+      · subst h; simp
+      · rw [if_neg (fun hq : k = k' => h hq.symm), if_neg h]
+  | (k₀, v₀) :: rs, k, v, hs, k' => by
+      rw [insertRec]
+      by_cases h1 : k == k₀
+      · have h1' : k = k₀ := by simpa using h1
+        subst h1'
+        rw [if_pos h1, lookupList_cons, lookupList_cons]
+        by_cases h : k' = k
+        · subst h; simp
+        · rw [if_neg (fun hq : k = k' => h hq.symm), if_neg (fun hq : k = k' => h hq.symm),
+            if_neg h]
+      · rw [if_neg h1]
+        by_cases h2 : k < k₀
+        · rw [if_pos h2, lookupList_cons]
+          by_cases h : k' = k
+          · subst h; simp
+          · rw [if_neg (fun hq : k = k' => h hq.symm), if_neg h]
+        · rw [if_neg h2, lookupList_cons, lookupList_cons,
+            lookupList_insertRec rs k v (sorted_tail hs) k']
+          by_cases h : k₀ = k'
+          · subst h
+            have hne : ¬ (k₀ = k) := fun hq => h1 (by simp [hq.symm])
+            rw [if_pos rfl, if_pos rfl, if_neg (fun hq : k₀ = k => hne hq)]
+          · rw [if_neg h, if_neg h]
+
+/-- Deleting removes that key and nothing else, on a sorted list. -/
+theorem lookupList_eraseRec : ∀ (m : List (Nat × ByteArray)) (k : Nat),
+    Sorted m → ∀ k', lookupList (eraseRec m k) k'
+      = if k' = k then none else lookupList m k'
+  | [], k, _, k' => by
+      rw [eraseRec, lookupList_nil]
+      by_cases h : k' = k
+      · rw [if_pos h]
+      · rw [if_neg h]
+  | (k₀, v₀) :: rs, k, hs, k' => by
+      rw [eraseRec]
+      by_cases h1 : k == k₀
+      · have h1' : k = k₀ := by simpa using h1
+        subst h1'
+        rw [if_pos h1, lookupList_cons]
+        by_cases h : k' = k
+        · subst h
+          rw [if_pos rfl]
+          exact lookupList_of_lt (sorted_tail hs) (fun q hq => sorted_head hs q hq)
+        · rw [if_neg h, if_neg (fun hq : k = k' => h hq.symm)]
+      · rw [if_neg h1, lookupList_cons, lookupList_cons,
+          lookupList_eraseRec rs k (sorted_tail hs) k']
+        by_cases h : k₀ = k'
+        · subst h
+          have hne : ¬ (k₀ = k) := fun hq => h1 (by simp [hq])
+          rw [if_pos rfl, if_pos rfl, if_neg (fun hq : k₀ = k => hne hq)]
+        · rw [if_neg h, if_neg h]
+
+/-- Sortedness survives a batch, which is what makes the two lemmas above apply. -/
+theorem applyOps_sorted : ∀ (ops : List Op) (m : List (Nat × ByteArray)),
+    Sorted m → Sorted (applyOps m ops)
+  | [], m, hs => by rw [applyOps]; exact hs
+  | (k, some v) :: ops, m, hs => by
+      rw [applyOps]; exact applyOps_sorted ops _ (insertRec_sorted (k := k) (v := v) hs)
+  | (k, none) :: ops, m, hs => by
+      rw [applyOps]; exact applyOps_sorted ops _ (eraseRec_sorted (k := k) hs)
+
+/-- A batch splits. -/
+theorem applyOps_append : ∀ (a b : List Op) (m : List (Nat × ByteArray)),
+    applyOps m (a ++ b) = applyOps (applyOps m a) b
+  | [], b, m => by rw [List.nil_append, applyOps]
+  | (k, some v) :: a, b, m => by
+      rw [List.cons_append, applyOps, applyOps, applyOps_append a b]
+  | (k, none) :: a, b, m => by
+      rw [List.cons_append, applyOps, applyOps, applyOps_append a b]
+
+/-- A batch that never names `k` leaves `k` alone. -/
+theorem lookupList_applyOps_notMem : ∀ (ops : List Op) (m : List (Nat × ByteArray)) (k : Nat),
+    Sorted m → (∀ o ∈ ops, o.1 ≠ k) → lookupList (applyOps m ops) k = lookupList m k
+  | [], m, k, _, _ => by rw [applyOps]
+  | (k₀, some v) :: ops, m, k, hs, hne => by
+      rw [applyOps, lookupList_applyOps_notMem ops _ k (insertRec_sorted hs)
+        (fun o ho => hne o (List.mem_cons_of_mem _ ho)),
+        lookupList_insertRec m k₀ v hs k,
+        if_neg (fun hq => hne (k₀, some v) (List.mem_cons_self ..) hq.symm)]
+  | (k₀, none) :: ops, m, k, hs, hne => by
+      rw [applyOps, lookupList_applyOps_notMem ops _ k (eraseRec_sorted hs)
+        (fun o ho => hne o (List.mem_cons_of_mem _ ho)),
+        lookupList_eraseRec m k₀ hs k,
+        if_neg (fun hq => hne (k₀, none) (List.mem_cons_self ..) hq.symm)]
+
+/-- **The last operation naming a key is the one that stands.** -/
+theorem lookupList_applyOps_last (pre post : List Op) (m : List (Nat × ByteArray))
+    (k : Nat) (ov : Option ByteArray) (hs : Sorted m) (hpost : ∀ o ∈ post, o.1 ≠ k) :
+    lookupList (applyOps m (pre ++ (k, ov) :: post)) k = ov := by
+  rw [applyOps_append]
+  have hs' : Sorted (applyOps m pre) := applyOps_sorted pre m hs
+  cases ov with
+  | some v =>
+      rw [applyOps, lookupList_applyOps_notMem post _ k (insertRec_sorted hs') hpost,
+        lookupList_insertRec _ k v hs' k, if_pos rfl]
+  | none =>
+      rw [applyOps, lookupList_applyOps_notMem post _ k (eraseRec_sorted hs') hpost,
+        lookupList_eraseRec _ k hs' k, if_pos rfl]
+
+/--
+**A batch is well formed, and no deeper than the inserts in it can make it.**
+
+Each insert adds at most one level, so a batch of `n` operations adds at most
+`n`; the fuel bound has to be carried explicitly because `lookup` is bounded by
+`maxDepth`.
+-/
+theorem batch_wf : ∀ (ops : List Op) {t t' : Tree} {pages : Pages}
+    {m : List (Nat × ByteArray)} {ws : List (Nat × Node)} {d : Nat},
+    WFd t pages d m → d + ops.length < maxDepth →
+    t.batch pages ops = some (t', ws) →
+    ∃ d', d' ≤ d + ops.length ∧ WFd t' (patch pages ws) d' (applyOps m ops)
+  | [], t, t', pages, m, ws, d, hwf, hd, h => by
+      rw [Tree.batch] at h
+      injection h with h; injection h with h1 h2
+      subst h1; subst h2
+      exact ⟨d, Nat.le_refl _, by rw [applyOps]; exact hwf⟩
+  | (k, ov) :: ops, t, t', pages, m, ws, d, hwf, hd, h => by
+      cases ov with
+      | some v =>
+          rw [Tree.batch] at h
+          split at h
+          · exact absurd h (by simp)
+          · rename_i t₁ ws₁ hins
+            split at h
+            · exact absurd h (by simp)
+            · rename_i t₂ ws₂ hb
+              injection h with h; injection h with h1 h2
+              subst h1; subst h2
+              obtain ⟨d₁, hle₁, hden₁⟩ :=
+                insert_correct hwf (by simp at hd; omega) hins
+              obtain ⟨d₂, hle₂, hden₂⟩ :=
+                batch_wf ops hden₁ (by simp at hd ⊢; omega) hb
+              refine ⟨d₂, by simp at hd ⊢; omega, ?_⟩
+              rw [patch_append, applyOps]
+              exact hden₂
+      | none =>
+          rw [Tree.batch] at h
+          split at h
+          · exact absurd h (by simp)
+          · rename_i t₁ ws₁ her
+            split at h
+            · exact absurd h (by simp)
+            · rename_i t₂ ws₂ hb
+              injection h with h; injection h with h1 h2
+              subst h1; subst h2
+              have hden₁ := erase_correct hwf her
+              obtain ⟨d₂, hle₂, hden₂⟩ :=
+                batch_wf ops hden₁ (by simp at hd ⊢; omega) hb
+              refine ⟨d₂, by simp at hd ⊢; omega, ?_⟩
+              rw [patch_append, applyOps]
+              exact hden₂
+
+/--
+**One commit, however many keys it touched.**
+
+The new root cell reads back the contents the batch produces — every key, and the
+whole ordered scan — while *whatever the crash did*, the old root cell reads back
+the old contents unchanged. Any image agreeing with the pre-commit one below the
+old mark, so arbitrary garbage in the whole range the batch was allocating; any
+subset of its writes having landed, in any order.
+
+This is `insert_commit` for a durable state that is more than one key, which is
+what a Raft node's is: the term, the vote, the log window and the snapshot have
+to move together or not at all.
+-/
+theorem batch_commit {t t' : Tree} {pages : Pages} {m : List (Nat × ByteArray)}
+    {ops : List Op} {ws : List (Nat × Node)} {d : Nat}
+    (hwf : WFd t pages d m) (hd : d + ops.length < maxDepth)
+    (h : t.batch pages ops = some (t', ws)) :
+    (∀ k', t'.lookup (patch pages ws) k' = lookupList (applyOps m ops) k')
+      ∧ t'.toList (patch pages ws) = applyOps m ops
+      ∧ ∀ (g : Pages), (∀ q, q < t.next → g q = pages q) →
+          ∀ (ws' : List (Nat × Node)), (∀ w ∈ ws', w ∈ ws) →
+            (∀ k', t.lookup (patch g ws') k' = lookupList m k')
+              ∧ t.toList (patch g ws') = m := by
+  obtain ⟨d', hle, hden⟩ := batch_wf ops hwf hd h
+  have hwf' : WF t' (patch pages ws) (applyOps m ops) := ⟨d', by omega, hden⟩
+  have hold : WF t pages m := ⟨d, by omega, hwf⟩
+  refine ⟨fun k' => lookup_correct hwf', toList_correct hwf', fun g hg ws' hsub => ?_⟩
+  have hfresh : ∀ w ∈ ws', t.next ≤ w.1 :=
+    fun w hw => ((batch_grows ops h).2.1 w (hsub w hw)).1
+  have hagree : ∀ q, q < t.next → patch g ws' q = pages q := fun q hq => by
+    rw [patch_below ws' hfresh q hq]; exact hg q hq
+  exact ⟨fun k' => (lookup_frame hagree).trans (lookup_correct hold),
+    (toList_frame hagree).trans (toList_correct hold)⟩
 
 /-- The same for a delete. -/
 theorem erase_commit {t t' : Tree} {pages : Pages} {m : List (Nat × ByteArray)}

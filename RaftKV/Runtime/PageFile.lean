@@ -169,6 +169,78 @@ def Db.del (db : Db) (k : Nat) : IO Unit := do
   | none => throw (IO.userError s!"delete of key {k} could not find its path")
   | some (t', ws) => commit db t' ws
 
+/-! ## Batched updates
+
+A single commit may have to change several keys at once — a node's durable state
+is a handful of them, and they must land together or not at all. The pure
+operations already compose: each returns the new root cell and the pages it
+allocated, and the allocator only ever hands out pages at or above the previous
+high-water mark, so the pages one operation writes are exactly the ones the next
+should read. Threading them through a pending map is all it takes, and the whole
+batch is published by the same six-step commit as a single key.
+-/
+
+/-- Read page `p`, preferring one this batch has already written. -/
+def readPageWith (db : Db) (pend : Std.HashMap Nat Node) (p : Nat) : IO (Option Node) := do
+  match pend[p]? with
+  | some n => return some n
+  | none => readPage db p
+
+/-- Cache the search path for `k`, reading through the batch's pending pages. -/
+partial def cachePathWith (db : Db) (t : Tree) (pend : Std.HashMap Nat Node) (k : Nat)
+    (c : Std.HashMap Nat Node) (p : Nat) : IO (Std.HashMap Nat Node) := do
+  if !(p < t.next) then return c
+  match ← readPageWith db pend p with
+  | none => return c
+  | some n =>
+      let c := c.insert p n
+      match n with
+      | .leaf _ => return c
+      | .branch keys children =>
+          match children[childIndex keys k]? with
+          | none => return c
+          | some ch => cachePathWith db t pend k c ch
+
+/-- One update in a batch: a binding to write, or a key to remove. -/
+abbrev Op := Nat × Option ByteArray
+
+/--
+Apply a whole batch in one commit.
+
+Nothing reaches the root cell until every operation has been applied, so a crash
+part-way through leaves the tree exactly as it was — which is what makes this
+usable for a node's durable state, where the term, the vote and the log have to
+move together.
+-/
+def Db.update (db : Db) (ops : List Op) : IO Unit := do
+  if ops.isEmpty then return
+  let t0 ← db.tree.get
+  let mut t := t0
+  let mut pend : Std.HashMap Nat Node := ∅
+  for (k, ov) in ops do
+    let pages : Pages ← do
+      match t.root with
+      | none => pure (fun _ => none)
+      | some r => pure (ofCache (← cachePathWith db t pend k ∅ r))
+    let combined : Pages := fun p =>
+      match pend[p]? with
+      | some n => some n
+      | none => pages p
+    match ov with
+    | some v =>
+        match t.insert combined k v with
+        | none => throw (IO.userError s!"value for key {k} does not fit in a page")
+        | some (t', ws) =>
+            t := t'
+            pend := ws.foldl (fun m pn => m.insert pn.1 pn.2) pend
+    | none =>
+        match t.erase combined k with
+        | none => throw (IO.userError s!"delete of key {k} could not find its path")
+        | some (t', ws) =>
+            t := t'
+            pend := ws.foldl (fun m pn => m.insert pn.1 pn.2) pend
+  commit db t pend.toList
+
 /-- Every binding, in key order. -/
 def Db.toList (db : Db) : IO (List (Nat × ByteArray)) := do
   let t ← db.tree.get
